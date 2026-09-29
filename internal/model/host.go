@@ -187,3 +187,18 @@ func (a Adapter) AddrStrings() []string {
 	}
 	return out
 }
+
+// DisplayName 返回面向用户的网卡名称。
+//
+// 优先用 FriendlyName（用户在网络连接面板里看到的名字，如「以太网」），
+// 它为空时回落到硬件描述。两者都空时给一个明确的占位符而不是空串 ——
+// 报告里出现「网卡「」」会让用户无法判断是哪块网卡出了问题。
+func (a Adapter) DisplayName() string {
+	if s := strings.TrimSpace(a.Name); s != "" {
+		return s
+	}
+	if s := strings.TrimSpace(a.Description); s != "" {
+		return s
+	}
+	return "未命名网卡"
+}
