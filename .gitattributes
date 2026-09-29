@@ -1,0 +1,21 @@
+# 统一行尾为 LF。
+#
+# 原因：本机 core.autocrlf=true 会把检出的 Go 文件转成 CRLF，
+# 而 gofmt 的输出是 LF —— 于是全新克隆后 `gofmt -l .` 会把
+# 所有文件都列为「需要格式化」，CI 门禁必然误报。
+# 显式声明 eol=lf 后，仓库与工作副本都是 LF，gofmt 判断稳定。
+#
+# 注：PowerShell 脚本用 LF 同样可被 `powershell -File` 正常执行（已实测），
+# 关键是脚本必须保留 UTF-8 BOM，BOM 不受本文件影响。
+* text=auto eol=lf
+
+# 二进制文件不做行尾与编码转换
+*.exe   binary
+*.dll   binary
+*.png   binary
+*.jpg   binary
+*.ico   binary
+*.zip   binary
+
+# 报告样本按文本处理，便于 diff 审查
+*.txt   text
