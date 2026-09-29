@@ -8,6 +8,7 @@
 coverage.out
 coverage.html
 coverage.txt
+/coverage-*
 
 # ── 临时验证程序（阶段 3 结构体布局验证用，不进入交付物）──
 /tmpverify/
