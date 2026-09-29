@@ -64,7 +64,15 @@ const (
 	VirtualTAP        = "TAP"
 	VirtualWireGuard  = "WireGuard"
 	VirtualLoopback   = "Loopback"
-	VirtualOther      = "Other"
+	// VirtualOverlay 是覆盖网络（overlay VPN）网卡：ZeroTier、Tailscale、
+	// Hamachi、Radmin VPN、SoftEther、Netbird 之类。
+	//
+	// 为什么必须单独归类：这类网卡是 Up 状态的软件接口，并且**自带一个
+	// 合成网关地址**（实测 ZeroTier 为 25.255.255.254，属于 IPv4 保留段）。
+	// 那不是局域网网关，对它做 ICMP 探测只会得到"无法发起"或"100% 丢包"，
+	// 而后者会被误读成"内网链路中断"，把运维引向完全错误的方向。
+	VirtualOverlay = "Overlay"
+	VirtualOther   = "Other"
 )
 
 // ── DNS 来源 ─────────────────────────────────────────────────

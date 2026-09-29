@@ -190,6 +190,26 @@ const (
 	gaaFlagIncludeGateways = 0x0080
 )
 
+// AFUnspec 是 AddressFamily 的 AF_UNSPEC：同时取得 IPv4 与 IPv6。
+//
+// 导出它是因为只查 IPv4 会漏掉"仅 IPv6"的机器（基线场景 S-05），
+// 而那种机器恰恰是最需要诊断报告的。
+const AFUnspec = afUnspec
+
+// DefaultAdapterFlags 是本工具采集网卡时使用的标准 flags 组合。
+//
+// 选这三项的理由，逐条对应到需求：
+//   - gaaFlagIncludeGateways：没有网关地址就无法做网关 ICMP 探测（R-12~R-14），
+//     而 FirstGatewayAddress 只在这个标志下才有内容。
+//   - gaaFlagSkipAnycast / gaaFlagSkipMulticast：任播与组播地址不是本机配置，
+//     混进 IPv4/IPv6 列表会让人误以为网卡配了多个地址。
+//
+// 刻意**不**传 gaaFlagSkipDnsServer：DNS 服务器列表正是 R-03/R-04 的判据。
+//
+// 有意留在这里而不是让调用方自己拼：flags 与 API 语义绑定，
+// 散落在调用方只会让下一次改错的人不知道为什么要这么传。
+const DefaultAdapterFlags = gaaFlagIncludeGateways | gaaFlagSkipAnycast | gaaFlagSkipMulticast
+
 // GetAdaptersAddresses 的错误码。ERROR_SUCCESS 即 0。
 const (
 	errorSuccess              = 0
@@ -216,6 +236,29 @@ const (
 	ifOperStatusDormant        = 5
 	ifOperStatusNotPresent     = 6
 	ifOperStatusLowerLayerDown = 7
+)
+
+// 以下导出常量供 collect 层做映射。
+//
+// 导出的是**数值**而不是「中文名」：把 IF_TYPE 6 该叫 "Ethernet" 还是
+// "以太网" 属于领域表达，应留在 internal/collect；winapi 只负责
+// 「6 就是 IF_TYPE_ETHERNET_CSMACD」这一层事实。
+const (
+	IfTypeEthernetCSMACD   = ifTypeEthernetCSMACD
+	IfTypePPP              = ifTypePPP
+	IfTypeSoftwareLoopback = ifTypeSoftwareLoopback
+	IfTypeIEEE80211        = ifTypeIEEE80211
+	IfTypeTunnel           = ifTypeTunnel
+)
+
+const (
+	IfOperStatusUp             = ifOperStatusUp
+	IfOperStatusDown           = ifOperStatusDown
+	IfOperStatusTesting        = ifOperStatusTesting
+	IfOperStatusUnknown        = ifOperStatusUnknown
+	IfOperStatusDormant        = ifOperStatusDormant
+	IfOperStatusNotPresent     = ifOperStatusNotPresent
+	IfOperStatusLowerLayerDown = ifOperStatusLowerLayerDown
 )
 
 // ICMP 状态码。

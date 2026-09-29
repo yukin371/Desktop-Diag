@@ -4,6 +4,7 @@ package winapi
 
 import (
 	"net"
+	"os"
 	"testing"
 	"time"
 )
@@ -378,4 +379,27 @@ func TestRuntimeIcmpInvalidHandleFails(t *testing.T) {
 	} else {
 		t.Logf("无效句柄按预期失败：%v", err)
 	}
+}
+
+func TestRuntimeGetWindowsDirectory(t *testing.T) {
+	dir, err := GetWindowsDirectory()
+	if err != nil {
+		t.Fatalf("GetWindowsDirectoryW 失败: %v", err)
+	}
+	if dir == "" {
+		t.Fatal("Windows 目录为空")
+	}
+
+	// 必须形如 "X:\..."，这样调用方才能取出盘符。
+	// 基线缺陷 B5 指出硬编码 "C:" 会在系统盘非 C 的机器上得出错误结论，
+	// 本测试是"盘符来自系统而非写死"这一修复的证据。
+	if len(dir) < 3 || dir[1] != ':' || (dir[2] != '\\' && dir[2] != '/') {
+		t.Errorf("Windows 目录 %q 不是「盘符:\\...」形式，无法据此求系统盘", dir)
+	}
+
+	// 该目录应当真实存在（用 os.Stat 交叉验证，避免 API 返回了一个看似合理的假路径）。
+	if _, err := os.Stat(dir); err != nil {
+		t.Errorf("Windows 目录 %q 不存在: %v", dir, err)
+	}
+	t.Logf("Windows 目录 = %s（据此得到系统盘 %s）", dir, dir[:2])
 }

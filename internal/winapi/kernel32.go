@@ -3,6 +3,7 @@
 package winapi
 
 import (
+	"errors"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -10,12 +11,19 @@ import (
 
 // 本文件封装 kernel32.dll 中只读的查询类 API。
 
+// errBufferTooSmall 表示 API 返回的数据超过了调用方提供的缓冲区。
+//
+// 单列成哨兵而不是复用系统错误码：这种情况说明我们自己的缓冲区估算错了，
+// 是程序缺陷而非环境问题，报出来应当让人一眼看出该调大常量。
+var errBufferTooSmall = errors.New("缓冲区过小，返回值被截断")
+
 var (
 	procGetTickCount64       = kernel32.NewProc("GetTickCount64")
 	procGlobalMemoryStatusEx = kernel32.NewProc("GlobalMemoryStatusEx")
 	procGetDiskFreeSpaceExW  = kernel32.NewProc("GetDiskFreeSpaceExW")
 	procGetSystemTimes       = kernel32.NewProc("GetSystemTimes")
 	procGetComputerNameExW   = kernel32.NewProc("GetComputerNameExW")
+	procGetWindowsDirectoryW = kernel32.NewProc("GetWindowsDirectoryW")
 )
 
 // COMPUTER_NAME_FORMAT 取值。
@@ -26,6 +34,13 @@ const (
 	computerNamePhysicalNetBIOS = 4
 	computerNameMax             = 8
 )
+
+// ComputerNameDNSHostname 是 GetComputerNameEx 应当使用的那一项。
+//
+// 之所以导出：调用方必须**明确**选这一项。默认的 ComputerNameNetBIOS
+// 有 15 字符上限，在长主机名上会被静默截断，而截断后的机器名会让运维
+// 认错机器——报告里的计算机名必须能拿去跟资产台账对得上。
+const ComputerNameDNSHostname = computerNameDNSHostname
 
 // MemoryStatusEx 对应 MEMORYSTATUSEX（64 字节）。
 //
@@ -166,4 +181,36 @@ func GetComputerNameEx(format uint32) (string, error) {
 		return "", callError("GetComputerNameExW", err)
 	}
 	return windows.UTF16ToString(buf[:size]), nil
+}
+
+// maxWindowsDirLen 是 Windows 目录缓冲区的上限。
+//
+// GetWindowsDirectoryW 在缓冲区不足时返回所需长度（可能大于 MAX_PATH），
+// 据此可以判断是否需要重试；这里给定一个足够宽裕的上限，
+// 避免为极端路径反复分配。
+const maxWindowsDirLen = 512
+
+// GetWindowsDirectory 返回 Windows 安装目录，例如 "C:\Windows"。
+//
+// 用途：求系统盘盘符。基线缺陷 B5 指出，硬编码 "C:" 会在系统盘非 C 的机器上
+// 得出完全错误的磁盘空间结论。虽然 %SystemDrive% 环境变量通常也可用，
+// 但那是可被进程环境改写的值，而本工具的报告要能作为故障证据，
+// 因此宁可向系统本身询问。
+//
+// 返回值不以反斜杠结尾（除非是根目录），与 API 原生行为一致。
+func GetWindowsDirectory() (string, error) {
+	buf := make([]uint16, maxWindowsDirLen)
+
+	r, _, err := procGetWindowsDirectoryW.Call(
+		uintptr(unsafe.Pointer(&buf[0])),
+		uintptr(len(buf)),
+	)
+	if r == 0 {
+		return "", callError("GetWindowsDirectoryW", err)
+	}
+	// 返回的是写入的字符数（不含结尾 NUL）；达到缓冲区上限说明被截断。
+	if int(r) >= len(buf) {
+		return "", callError("GetWindowsDirectoryW", errBufferTooSmall)
+	}
+	return windows.UTF16ToString(buf[:r]), nil
 }
