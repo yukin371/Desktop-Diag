@@ -113,10 +113,14 @@ type Adapter struct {
 	IPv4         []Addr
 	IPv6         []Addr
 	Gateways     []string // IPv4 默认网关（FirstGatewayAddress + 注册表兜底）
-	DNS          []string // DNS 服务器（FirstDnsServerAddress + 注册表兜底）
-	DNSSource    string   // 见 DNSSource* 常量
-	DHCPEnabled  bool
-	DHCPKnown    bool // 是否成功判定 DHCP 状态（注册表不可读时为 false）
+	// GatewaysV6 是 IPv6 默认网关，仅供报告展示与「是否存在默认路由」判断。
+	// 必须与 Gateways 分开：混进去会让只支持 IPv4 的 ICMP 探测失败并误报 R-19；
+	// 整条丢弃又会让仅 IPv6 的机器被 R-02 误判为「无网关配置」。
+	GatewaysV6  []string
+	DNS         []string // DNS 服务器（FirstDnsServerAddress + 注册表兜底）
+	DNSSource   string   // 见 DNSSource* 常量
+	DHCPEnabled bool
+	DHCPKnown   bool // 是否成功判定 DHCP 状态（注册表不可读时为 false）
 }
 
 // IsActive 报告链路是否已建立（R-01/R-02/R-03 的第一道门槛）。
@@ -151,9 +155,15 @@ func (a Adapter) HasDNS() bool {
 	return false
 }
 
-// HasGateway 报告默认网关列表是否非空（R-02 的输入）。
+// HasGateway 报告该网卡是否配置了默认网关，IPv4 与 IPv6 都算（R-02 的输入）。
+// 只看 IPv4 会把「仅 IPv6 出口」的机器误判成无法联网（R-02，SEVERE）。
 func (a Adapter) HasGateway() bool {
 	for _, g := range a.Gateways {
+		if strings.TrimSpace(g) != "" {
+			return true
+		}
+	}
+	for _, g := range a.GatewaysV6 {
 		if strings.TrimSpace(g) != "" {
 			return true
 		}
@@ -161,7 +171,8 @@ func (a Adapter) HasGateway() bool {
 	return false
 }
 
-// FirstGateway 返回第一个非空网关，无则返回空串。
+// FirstGateway 返回第一个非空 IPv4 网关，无则返回空串。
+// 只返回 IPv4：返回值会直接交给只支持 IPv4 的 ICMP 探测。
 func (a Adapter) FirstGateway() string {
 	for _, g := range a.Gateways {
 		if strings.TrimSpace(g) != "" {

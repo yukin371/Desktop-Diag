@@ -230,6 +230,11 @@ func renderAdapter(w io.Writer, n int, a model.Adapter) {
 	}
 	fmt.Fprintf(w, "%s网关     : %s\n", indentInner, gateway)
 
+	// IPv6 网关单独一行：本工具只对 IPv4 网关做探测，合并进上一行会让人以为它也测过。
+	if v6 := joinOr(a.GatewaysV6, ", ", ""); v6 != "" {
+		fmt.Fprintf(w, "%sIPv6 网关: %s\n", indentInner, v6)
+	}
+
 	dns := joinOr(a.DNS, ", ", "未配置")
 	switch a.DNSSource {
 	case model.DNSSourceMissing:

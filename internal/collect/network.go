@@ -54,6 +54,13 @@ func (c networkCollector) Collect(ctx context.Context, snap *model.Snapshot) err
 				a.Index, a.Name, a.Description, a.IfType, a.OperStatus,
 				orNone(a.MAC), a.IsVirtual, orNone(strings.Join(a.Gateways, ", ")),
 				orNone(strings.Join(a.DNS, ", ")), a.DNSSource))
+
+		if len(a.GatewaysV6) > 0 {
+			// 单独留痕，否则报告里会"凭空少一个网关"，让人怀疑采集漏了数据。
+			snap.AddRaw("网络适配器", "GetAdaptersAddresses/FirstGatewayAddress",
+				fmt.Sprintf("%s 的 IPv6 默认网关（本工具只诊断 IPv4 链路，不参与探测）：%s",
+					a.DisplayName(), strings.Join(a.GatewaysV6, ", ")))
+		}
 	}
 
 	if len(adapters) == 0 {
@@ -69,6 +76,7 @@ func (c networkCollector) Collect(ctx context.Context, snap *model.Snapshot) err
 // 转换放在 collect 而不是 winapi：winapi 是叶子包，不能 import model；
 // 而"IF_TYPE 6 叫什么名字"属于领域知识，不该混进 syscall 封装里。
 func convertAdapter(r winapi.RawAdapter) model.Adapter {
+	v4Gateways, v6Gateways := splitGateways(r.Gateways)
 	a := model.Adapter{
 		Index:       r.IfIndex,
 		Name:        cleanString(r.FriendlyName),
@@ -78,7 +86,8 @@ func convertAdapter(r winapi.RawAdapter) model.Adapter {
 		OperStatus:  operStatusName(r.OperStatus),
 		DHCPEnabled: r.Dhcpv4Enabled,
 		DHCPKnown:   true,
-		Gateways:    dropBlanks(r.Gateways),
+		Gateways:    v4Gateways,
+		GatewaysV6:  v6Gateways,
 	}
 
 	// AdminEnabled 恒为 true 是刻意的：GetAdaptersAddresses 不暴露管理启用位，
@@ -286,6 +295,20 @@ func dropBlanks(in []string) []string {
 		return nil
 	}
 	return out
+}
+
+// splitGateways 按协议族拆分默认网关：ICMP 探测只支持 IPv4，混进 fe80:: 会让
+// 双栈机器必现 R-19「诊断不完整」；整条丢弃又会让仅 IPv6 的机器被 R-02 误判成
+// 「无网关配置」。解析不了的项归入 IPv6 侧，避免拿垃圾串去探测。
+func splitGateways(gateways []string) (v4, v6 []string) {
+	for _, g := range dropBlanks(gateways) {
+		if ip := net.ParseIP(g); ip != nil && ip.To4() != nil {
+			v4 = append(v4, g)
+			continue
+		}
+		v6 = append(v6, g)
+	}
+	return v4, v6
 }
 
 // orNone 把空值显示为「（无）」，避免报告里出现「网关：」这种让人怀疑采集失败的空白。

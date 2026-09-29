@@ -90,15 +90,18 @@ func TestAdapterHasUsableIPv4(t *testing.T) {
 func TestAdapterHasGatewayAndDNS(t *testing.T) {
 	tests := []struct {
 		name            string
-		gateways, dns   []string
+		gateways, gwsV6 []string
+		dns             []string
 		wantGW, wantDNS bool
 	}{
-		{"都为空", nil, nil, false, false},
-		{"空字符串不算有", []string{""}, []string{"  "}, false, false},
-		{"都有", []string{"192.168.1.1"}, []string{"8.8.8.8"}, true, true},
+		{"都为空", nil, nil, nil, false, false},
+		{"空字符串不算有", []string{""}, nil, []string{"  "}, false, false},
+		{"都有", []string{"192.168.1.1"}, nil, []string{"8.8.8.8"}, true, true},
+		{"仅有 IPv6 网关也算有", nil, []string{"fe80::1"}, []string{"8.8.8.8"}, true, true},
+		{"IPv6 网关是空白串不算有", nil, []string{" "}, nil, false, false},
 	}
 	for _, tt := range tests {
-		a := Adapter{Gateways: tt.gateways, DNS: tt.dns}
+		a := Adapter{Gateways: tt.gateways, GatewaysV6: tt.gwsV6, DNS: tt.dns}
 		if got := a.HasGateway(); got != tt.wantGW {
 			t.Errorf("%s: HasGateway() = %v, want %v", tt.name, got, tt.wantGW)
 		}
@@ -122,6 +125,11 @@ func TestAdapterFirstGateway(t *testing.T) {
 		if got := (Adapter{Gateways: tt.gw}).FirstGateway(); got != tt.want {
 			t.Errorf("%s: FirstGateway() = %q, want %q", tt.name, got, tt.want)
 		}
+	}
+
+	// 仅 IPv6 网关时 FirstGateway 必须为空：它的返回值会交给只支持 IPv4 的 ICMP 探测。
+	if got := (Adapter{GatewaysV6: []string{"fe80::1"}}).FirstGateway(); got != "" {
+		t.Errorf("仅 IPv6 网关时 FirstGateway() = %q，期望空串", got)
 	}
 }
 

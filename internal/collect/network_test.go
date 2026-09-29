@@ -9,6 +9,46 @@ import (
 	"github.com/yukin371/desktop-diag/internal/winapi"
 )
 
+// TestSplitGateways 钉住协议族分流：混进 IPv6 网关会让双栈机器必现 R-19 误报，
+// 而整条丢弃会让仅 IPv6 的机器被 R-02 误判成无法联网。
+func TestSplitGateways(t *testing.T) {
+	tests := []struct {
+		name           string
+		in             []string
+		wantV4, wantV6 []string
+	}{
+		{"空列表", nil, nil, nil},
+		{"只有 IPv4", []string{"192.168.1.1"}, []string{"192.168.1.1"}, nil},
+		{"只有 IPv6", []string{"fe80::1"}, nil, []string{"fe80::1"}},
+		{"双栈按族分流", []string{"fe80::1", "192.168.1.1"}, []string{"192.168.1.1"}, []string{"fe80::1"}},
+		{"去掉空白串", []string{"", "192.168.1.1", "  "}, []string{"192.168.1.1"}, nil},
+		{"解析不了的归入 IPv6 侧", []string{"not-an-ip"}, nil, []string{"not-an-ip"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			v4, v6 := splitGateways(tt.in)
+			if !sameStrings(v4, tt.wantV4) {
+				t.Errorf("IPv4 = %v，期望 %v", v4, tt.wantV4)
+			}
+			if !sameStrings(v6, tt.wantV6) {
+				t.Errorf("IPv6 = %v，期望 %v", v6, tt.wantV6)
+			}
+		})
+	}
+}
+
+func sameStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
 func TestIfTypeName(t *testing.T) {
 	cases := map[uint32]string{
 		winapi.IfTypeEthernetCSMACD:   model.IfTypeEthernet,

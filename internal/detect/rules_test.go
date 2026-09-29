@@ -189,6 +189,13 @@ func TestRuleR02NoGateway(t *testing.T) {
 	if got := run(t, "R-02", snap(a)); len(got) != 1 {
 		t.Errorf("网关为空白串应视为未配置并触发 R-02，实际 %d 条", len(got))
 	}
+
+	// 仅 IPv6 出口的机器能上网，不能因为 IPv4 网关为空就报 R-02。
+	a.Gateways = nil
+	a.GatewaysV6 = []string{"fe80::1"}
+	if got := run(t, "R-02", snap(a)); len(got) != 0 {
+		t.Errorf("仅有 IPv6 网关时不应触发 R-02，实际 %d 条", len(got))
+	}
 }
 
 // TestRuleR03NoDNS 同时钉住基线场景 S-17：DNS 来源为「未采集」时绝不能报

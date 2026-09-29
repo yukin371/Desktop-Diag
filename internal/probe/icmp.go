@@ -86,6 +86,7 @@ func ICMP(ctx context.Context, target string, opts ICMPOptions) (model.ProbeResu
 
 	var rtts []time.Duration
 	callFailures := 0
+	var lastCallErr error
 
 	for i := 0; i < opts.Count; i++ {
 		// ctx 已取消/超时 → 提前结束，把已完成的统计如实返回，不补足到 Count。
@@ -98,6 +99,7 @@ func ICMP(ctx context.Context, target string, opts ICMPOptions) (model.ProbeResu
 		echo, echoErr := winapi.IcmpSendEcho(handle, ip, payload, timeout)
 		if echoErr != nil {
 			callFailures++
+			lastCallErr = echoErr
 			continue
 		}
 
@@ -111,7 +113,8 @@ func ICMP(ctx context.Context, target string, opts ICMPOptions) (model.ProbeResu
 	// 每个发出去的包都是调用级失败 → 这是"探测无法进行"，必须报错，否则句柄失效
 	// 会被读成"网关不回包"，产生误导性的严重告警（对应 R-18）。
 	if result.Sent > 0 && callFailures == result.Sent {
-		return model.ProbeResult{}, fmt.Errorf("ICMP 探测 %q：%d 个包全部调用失败，探测无法进行", target, callFailures)
+		return model.ProbeResult{}, fmt.Errorf("ICMP 探测 %q：%d 个包全部调用失败，探测无法进行: %w",
+			target, callFailures, lastCallErr)
 	}
 
 	result.Duration = time.Since(start)
