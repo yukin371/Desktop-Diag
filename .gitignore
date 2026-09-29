@@ -12,6 +12,11 @@ coverage.txt
 # ── 临时验证程序（阶段 3 结构体布局验证用，不进入交付物）──
 /tmpverify/
 
+# ── 结构体布局取证工具的生成物（tools/layout-probe/run.ps1 可随时重建）──
+/tools/layout-probe/bin/
+/tools/layout-probe/layout-probe-output.txt
+/tools/layout-probe/*.obj
+
 # ── 本工具运行时产生的诊断报告（测试时落在仓库内）────────
 reports/
 diag_*.txt
