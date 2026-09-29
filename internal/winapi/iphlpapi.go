@@ -23,10 +23,7 @@ var (
 )
 
 const (
-	// maxAdapterCount 是遍历网卡链表时的硬上限。
-	// 正常情况下不会有机器超过几十个网卡适配器；设上限是为了在底层数据异常
-	// （例如链表成环）时不会无限循环——诊断工具本身绝不能因为被诊断对象的
-	// 数据异常而卡死。
+	// maxAdapterCount 是遍历网卡链表时的硬上限：底层数据异常（例如链表成环）时不能无限循环，诊断工具本身不能卡死。
 	maxAdapterCount = 512
 
 	// GetAdaptersAddresses 的推荐初始缓冲区大小（Windows 文档建议 15 KB）。
@@ -38,14 +35,12 @@ const (
 )
 
 // RawAddr 是网卡地址的中立表示。
-//
-// winapi 是叶子包，不能 import internal/model，所以这里用自己的类型；
-// collect 层负责转成 model.Addr（补上掩码与 Scope 分类）。
+// winapi 是叶子包，不能 import internal/model，所以这里用自己的类型，由 collect 层负责转换。
 type RawAddr struct {
-	IP      string // 呈现形式，如 "192.168.1.10" / "fe80::a1b2"
+	IP      string // 呈现形式
 	Prefix  int    // OnLinkPrefixLength，即前缀长度
 	Family  uint16 // afInet / afInet6
-	ScopeID uint32 // IPv6 作用域 ID（仅对 IPv6 有意义）
+	ScopeID uint32 // IPv6 作用域 ID
 
 	DadState          uint32
 	PrefixOrigin      uint32
@@ -61,11 +56,11 @@ type RawAdapter struct {
 	Ipv6IfIndex uint32
 
 	AdapterName  string // ANSI 形式的 {GUID}，用于关联注册表 Interfaces 子键
-	FriendlyName string // 用户可读名称（如"以太网"）
+	FriendlyName string // 用户可读名称
 	Description  string // 驱动描述
 	DnsSuffix    string
 
-	PhysicalAddress       string // 冒号分隔大写十六进制，如 "00:1A:2B:3C:4D:5E"
+	PhysicalAddress       string // 冒号分隔的大写十六进制
 	PhysicalAddressLength uint32
 
 	Mtu        uint32
@@ -84,15 +79,9 @@ type RawAdapter struct {
 // IsUp 报告适配器是否处于 Up 状态。
 func (a RawAdapter) IsUp() bool { return a.OperStatus == ifOperStatusUp }
 
-// GetAdaptersAddresses 枚举本机所有网络适配器。
-//
-// family 传 afUnspec 以同时取得 IPv4 与 IPv6；flags 建议
-// gaaFlagIncludeGateways | gaaFlagSkipAnycast | gaaFlagSkipMulticast，
-// 因为只有 IncludeGateways 才能拿到 FirstGatewayAddress 链表。
-//
-// 采用「先问大小、再取数据」的双次调用：首调用必然返回 ERROR_BUFFER_OVERFLOW
-// 并写回所需字节数，据此分配后重试。采用递增重试而不是依赖第一次问到的值，
-// 是因为调用之间网卡可能发生变化（例如 VPN 正在建立）。
+// GetAdaptersAddresses 枚举本机所有网络适配器；family 传 afUnspec 可同时取得 IPv4 与 IPv6。
+// flags 必须含 gaaFlagIncludeGateways，否则拿不到 FirstGatewayAddress 链表。
+// 采用「先问大小、再取数据」的双次调用，且每次重试都递增缓冲区——调用之间网卡可能发生变化（例如 VPN 正在建立）。
 func GetAdaptersAddresses(family, flags uint32) ([]RawAdapter, error) {
 	size := uint32(initialAdapterBufSize)
 
@@ -117,7 +106,7 @@ func GetAdaptersAddresses(family, flags uint32) ([]RawAdapter, error) {
 			continue
 
 		case errorNoData:
-			// 没有任何适配器（例如网卡全部被禁用）。这是合法结果，不是错误。
+			// 没有任何适配器（网卡全部被禁用）是合法结果，不是错误。
 			return nil, nil
 
 		default:
@@ -129,10 +118,7 @@ func GetAdaptersAddresses(family, flags uint32) ([]RawAdapter, error) {
 }
 
 // parseAdapters 遍历 GetAdaptersAddresses 写回的链表。
-//
-// 这里每一步都做边界校验。缓冲区来自系统，但本工具读的是原始内存，
-// 一旦偏移假设有误，未校验的指针解引用会直接让进程崩溃——
-// 而崩溃的正是那个用来诊断崩溃的工具。
+// 缓冲区来自系统但按原始内存解析，每一步都必须做边界校验——一旦偏移假设有误，崩溃的正是这个诊断工具本身。
 func parseAdapters(buf []byte) ([]RawAdapter, error) {
 	nodeSize := int(unsafe.Sizeof(ipAdapterAddressesLH{}))
 	if len(buf) < nodeSize {
@@ -155,8 +141,7 @@ func parseAdapters(buf []byte) ([]RawAdapter, error) {
 		if addr < base || addr+uintptr(nodeSize) > limit {
 			return out, errors.New("GetAdaptersAddresses: 链表节点越出返回缓冲区，已停止遍历")
 		}
-		// 布局自检：系统写回的 Length 必须不小于我们声明的结构体大小。
-		// 若小于，说明本机 SDK 的结构体比我们的映射更小，后续字段偏移全部不可信。
+		// 系统写回的 Length 不得小于我们声明的结构体大小，否则后续字段偏移全部不可信。
 		if int(cur.Length) < nodeSize {
 			return out, fmt.Errorf("GetAdaptersAddresses: 节点 Length=%d 小于本程序预期的 %d，结构体布局不匹配，已停止遍历",
 				cur.Length, nodeSize)
@@ -186,9 +171,7 @@ func convertAdapter(a *ipAdapterAddressesLH) RawAdapter {
 		Dhcpv4Enabled:         a.Flags&adapterFlagDhcpv4Enabled != 0,
 	}
 
-	// MAC：PhysicalAddress 固定 8 字节，但实际有效长度由 PhysicalAddressLength 决定，
-	// 且可能超过 6（例如 InfiniBand 的 20 字节地址无法完全容纳，
-	// 所以还要夹到数组长度以内）。
+	// MAC：有效长度由 PhysicalAddressLength 决定，但可能超过数组长度（如 InfiniBand 的 20 字节地址），需夹取。
 	n := a.PhysicalAddressLength
 	if n > uint32(len(a.PhysicalAddress)) {
 		n = uint32(len(a.PhysicalAddress))
@@ -197,7 +180,6 @@ func convertAdapter(a *ipAdapterAddressesLH) RawAdapter {
 		raw.PhysicalAddress = formatMAC(a.PhysicalAddress[:n])
 	}
 
-	// 单播地址：按 family 分到 IPv4 / IPv6 两组。
 	for u := a.FirstUnicastAddress; u != nil; u = u.Next {
 		if ip, family, scope, ok := sockaddrToAddr(u.Address); ok {
 			ra := RawAddr{
@@ -220,14 +202,12 @@ func convertAdapter(a *ipAdapterAddressesLH) RawAdapter {
 		}
 	}
 
-	// DNS 服务器链表。
 	for d := a.FirstDnsServerAddress; d != nil; d = d.Next {
 		if ip, _, _, ok := sockaddrToAddr(d.Address); ok {
 			raw.DNS = append(raw.DNS, ip)
 		}
 	}
 
-	// 网关链表。只有传了 gaaFlagIncludeGateways 才有内容。
 	for g := a.FirstGatewayAddress; g != nil; g = g.Next {
 		if ip, _, _, ok := sockaddrToAddr(g.Address); ok {
 			raw.Gateways = append(raw.Gateways, ip)
@@ -237,11 +217,8 @@ func convertAdapter(a *ipAdapterAddressesLH) RawAdapter {
 	return raw
 }
 
-// sockaddrToAddr 把 socketAddress 里的 sockaddr 解析成 IP 字符串。
-//
-// 返回 (IP呈现形式, address family, IPv6 作用域 ID, 是否成功)。
-// 长度为 0 或长度与 family 不符时返回 false，而不是硬读——
-// iSockaddrLength 是系统给的，用它做一致性校验成本极低。
+// sockaddrToAddr 把 socketAddress 里的 sockaddr 解析成 (IP 呈现形式, address family, IPv6 作用域 ID, 是否成功)。
+// 长度与 family 不符时返回 false，而不是硬读——iSockaddrLength 由系统给出，用它做一致性校验成本极低。
 func sockaddrToAddr(sa socketAddress) (string, uint16, uint32, bool) {
 	if sa.LpSockaddr == nil {
 		return "", 0, 0, false
@@ -281,13 +258,10 @@ func formatMAC(b []byte) string {
 	return sb.String()
 }
 
-// ── ICMP ─────────────────────────────────────────────────────
+// ICMP
 
 // IcmpEchoResult 是一次 IcmpSendEcho 的结果。
-//
-// 注意 Status 与 Go 的 error 是两个不同层次：
-// 「目标没回包（超时）」是一次**成功的调用**，Status 为 ipReqTimedOut；
-// 只有调用本身失败（句柄无效、参数错误、权限不足）才返回 error。
+// Status 与 Go 的 error 是两个层次：超时（Status=ipReqTimedOut）是**调用成功**，只有调用本身失败才是 error。
 // 把超时当成 error 会让丢包率计算彻底失准。
 type IcmpEchoResult struct {
 	Status        uint32
@@ -300,11 +274,7 @@ type IcmpEchoResult struct {
 func (r IcmpEchoResult) Replied() bool { return r.Status == ipSuccess }
 
 // IcmpCreateFile 打开一个 ICMP 句柄。
-//
-// 这是**无需管理员权限**发 ICMP 的关键：它由系统内核代发与收包，
-// 而不是像原始套接字（x/net/icmp + "ip4:icmp"）那样要求提升权限。
-// 阶段 1 已实测：非管理员下 IcmpCreateFile 与 IcmpCloseHandle 均成功。
-//
+// 它由系统内核代发收包，因此**无需管理员权限**（原始套接字才需要提升权限）。
 // 调用方必须在用完后调用 IcmpCloseHandle，否则句柄泄漏。
 func IcmpCreateFile() (uintptr, error) {
 	h, _, err := procIcmpCreateFile.Call()
@@ -329,18 +299,14 @@ func IcmpCloseHandle(handle uintptr) error {
 const icmpReplyBufferExtra = 8
 
 // IcmpSendEcho 向 dest 发送一个 ICMP 回显请求并等待应答。
-//
 // 仅支持 IPv4：IPAddr 参数是 32 位，IPv6 需要 Icmp6SendEcho2。
-// 本工具的网关探测天然是 IPv4 场景（网关地址取自 IPv4 单播配置）。
-//
-// timeout 之下没有应答时返回 Status == ipReqTimedOut 的**正常结果**，不是错误。
+// timeout 内没有应答时返回 Status == ipReqTimedOut 的**正常结果**，不是错误。
 func IcmpSendEcho(handle uintptr, dest net.IP, payload []byte, timeout time.Duration) (IcmpEchoResult, error) {
 	ip4 := dest.To4()
 	if ip4 == nil {
 		return IcmpEchoResult{}, fmt.Errorf("IcmpSendEcho: 目标 %q 不是 IPv4 地址", dest.String())
 	}
-	// IPAddr 要求网络字节序；BigEndian 解析正好得到该值（127.0.0.1 → 0x7F000001）。
-	destAddr := binary.BigEndian.Uint32(ip4)
+	destAddr := ipAddrFromIPv4(ip4)
 
 	replySize := int(unsafe.Sizeof(icmpEchoReply{})) + len(payload) + icmpReplyBufferExtra
 	replyBuf := make([]byte, replySize)
@@ -362,9 +328,8 @@ func IcmpSendEcho(handle uintptr, dest net.IP, payload []byte, timeout time.Dura
 	)
 
 	if ret == 0 {
-		// 有些 Windows 版本在超时且无任何回包时返回 0，并把
-		// IP_REQ_TIMED_OUT 放进 GetLastError。把它归一化成「超时结果」，
-		// 否则丢包率会被误算成「探测失败」。
+		// 有些 Windows 版本在超时且无任何回包时返回 0，并把 IP_REQ_TIMED_OUT 放进 GetLastError，
+		// 这里把它归一化成「超时结果」，否则丢包率会被误算成「探测失败」。
 		var errno syscall.Errno
 		if errors.As(callErr, &errno) {
 			if uint32(errno) == ipReqTimedOut {
@@ -372,8 +337,7 @@ func IcmpSendEcho(handle uintptr, dest net.IP, payload []byte, timeout time.Dura
 			}
 			return IcmpEchoResult{}, callError("IcmpSendEcho", callErr)
 		}
-		// GetLastError 未被设置（errno 为 0）时同样按超时处理：
-		// 调用返回 0 且无错误码，只可能是没有回包。
+		// GetLastError 未被设置（errno 为 0）时同样按超时处理：返回 0 且无错误码只可能是没有回包。
 		return IcmpEchoResult{Status: ipReqTimedOut}, nil
 	}
 
@@ -381,17 +345,29 @@ func IcmpSendEcho(handle uintptr, dest net.IP, payload []byte, timeout time.Dura
 	return IcmpEchoResult{
 		Status:        reply.Status,
 		RoundTripTime: reply.RoundTripTime,
-		Address:       ipv4FromNetworkOrder(reply.Address),
+		Address:       ipv4FromIPAddr(reply.Address),
 		DataSize:      reply.DataSize,
 	}, nil
 }
 
-// ipv4FromNetworkOrder 把 ICMP 回复里的 IPAddr（网络字节序）转成点分十进制。
-func ipv4FromNetworkOrder(v uint32) string {
+// ipAddrFromIPv4 把 4 字节 IPv4 地址编码成 ICMP API 的 IPAddr 参数。
+//
+// IPAddr 在内存里就按地址本身的字节顺序存放，所以小端机器上 127.0.0.1 的数值是
+// 0x0100007F（内存字节 7F 00 00 01），而不是 0x7F000001。
+//
+// 写反了 probe 不会失败：0x7F000001 的内存字节是 01 00 00 7F，即 1.0.0.127 —— 一个
+// 真实存在、会正常应答的公网地址。于是回环探测"成功"，但 RTT 变成 195ms 的互联网
+// 延迟，判定层再拿它去比 150ms 阈值，就会在每次诊断里凭空造出「内网延迟偏高」。
+func ipAddrFromIPv4(ip4 []byte) uint32 {
+	return binary.LittleEndian.Uint32(ip4)
+}
+
+// ipv4FromIPAddr 是 ipAddrFromIPv4 的逆运算，用于把回复包里的来源地址转成点分十进制。
+func ipv4FromIPAddr(v uint32) string {
 	return net.IPv4(
-		byte(v>>24),
-		byte(v>>16),
-		byte(v>>8),
 		byte(v),
+		byte(v>>8),
+		byte(v>>16),
+		byte(v>>24),
 	).String()
 }

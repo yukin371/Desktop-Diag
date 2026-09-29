@@ -4,6 +4,7 @@ package winapi
 
 import (
 	"errors"
+	"net"
 	"strings"
 	"testing"
 	"unsafe"
@@ -11,14 +12,8 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-// 本文件只测**不接触系统**的纯函数。
-//
-// 与 winapi_integration_test.go 的分工：
-//   - 本文件：输入 → 输出 的转换逻辑，任何机器上都必须通过。
-//   - 集成测试文件：真实调用 Win32 API，验证结构体映射与调用方式。
-//
-// 之所以单独拆出来，是因为纯函数里的长度上限、字节序、边界长度
-// 都是**安全性质**（读越界、无限循环、丢包率失准），不能只靠真机碰运气覆盖。
+// 本文件只测不接触系统的纯函数。
+// 纯函数里的长度上限、字节序、边界长度都是**安全性质**，不能只靠真机碰运气覆盖。
 
 func TestPureFormatMAC(t *testing.T) {
 	tests := []struct {
@@ -44,27 +39,35 @@ func TestPureFormatMAC(t *testing.T) {
 	}
 }
 
-// TestPureIPv4FromNetworkOrder 覆盖字节序。
+// TestPureIPAddrByteOrder 双向覆盖 IPAddr 的字节序。
 //
-// 这是最容易出错也最难发现的地方：ICMP_ECHO_REPLY.Address 是**网络字节序**，
-// 直接按主机字节序拆字节会得到反过来的地址（127.0.0.1 会变成 1.0.0.127），
-// 而回环探测依然"成功"，所以真机测试不一定抓得住。
-func TestPureIPv4FromNetworkOrder(t *testing.T) {
+// 这是本仓最贵的一次教训：写反了 probe **不会失败**。0x7F000001 的内存字节是
+// 01 00 00 7F，即 1.0.0.127 —— 一个真实存在、会正常应答的公网地址，于是回环探测
+// 一直"成功"，只是 RTT 从 0ms 变成 195ms 的互联网延迟；网关那次则是在探测
+// 1.0.168.192，RTT 263ms。集成测试只断言「有应答」，所以完全抓不住。
+func TestPureIPAddrByteOrder(t *testing.T) {
 	tests := []struct {
 		name string
-		in   uint32
-		want string
+		ip   string
+		addr uint32
 	}{
-		{"回环", 0x7F000001, "127.0.0.1"},
-		{"阿里 DNS", 0xDF050505, "223.5.5.5"},
-		{"全零", 0x00000000, "0.0.0.0"},
-		{"全一", 0xFFFFFFFF, "255.255.255.255"},
-		{"网关典型值", 0xC0A80101, "192.168.1.1"},
+		{"回环", "127.0.0.1", 0x0100007F},
+		{"网关典型值", "192.168.1.1", 0x0101A8C0},
+		{"阿里 DNS", "223.5.5.5", 0x050505DF},
+		{"全零", "0.0.0.0", 0x00000000},
+		{"全一", "255.255.255.255", 0xFFFFFFFF},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := ipv4FromNetworkOrder(tt.in); got != tt.want {
-				t.Errorf("ipv4FromNetworkOrder(0x%08X) = %q, 期望 %q", tt.in, got, tt.want)
+			ip4 := net.ParseIP(tt.ip).To4()
+			if ip4 == nil {
+				t.Fatalf("%q 不是 IPv4 地址", tt.ip)
+			}
+			if got := ipAddrFromIPv4(ip4); got != tt.addr {
+				t.Errorf("ipAddrFromIPv4(%s) = 0x%08X, 期望 0x%08X", tt.ip, got, tt.addr)
+			}
+			if got := ipv4FromIPAddr(tt.addr); got != tt.ip {
+				t.Errorf("ipv4FromIPAddr(0x%08X) = %q, 期望 %q", tt.addr, got, tt.ip)
 			}
 		})
 	}
@@ -87,8 +90,7 @@ func TestPureHex32(t *testing.T) {
 	}
 }
 
-// TestPureCallError 断言 nil 错误不会产生 "nil" 字样，
-// 否则报告里会出现 "GetFoo: <nil>" 这种毫无意义的诊断信息。
+// TestPureCallError 断言 nil 错误不会产生 "nil" 字样，否则报告里会出现 "GetFoo: <nil>" 这种无意义的诊断信息。
 func TestPureCallError(t *testing.T) {
 	err := callError("GetFoo", nil)
 	if err == nil {
@@ -116,7 +118,6 @@ func TestPureBytePtrToString(t *testing.T) {
 		t.Errorf("nil 指针应返回空串，实际 %q", got)
 	}
 
-	// 含多字节 UTF-8 的内容：bytePtrToString 按字节读取，中文应原样保留。
 	buf := append([]byte("网卡描述 abc"), 0)
 	if got := bytePtrToString(&buf[0]); got != "网卡描述 abc" {
 		t.Errorf("bytePtrToString = %q, 期望 %q", got, "网卡描述 abc")
@@ -156,10 +157,7 @@ func TestPureUTF16PtrToString(t *testing.T) {
 	}
 }
 
-// TestPureFiletimeToUint64 断言高低位的拼接顺序。
-//
-// FILETIME 是 (HighDateTime<<32)|LowDateTime；写反了会让 GetTickCount64
-// 之类的相对比较看着"正常"，但绝对值离谱，属于难以察觉的错误。
+// TestPureFiletimeToUint64 断言高低位的拼接顺序：写反了绝对值离谱，但相对比较看着正常，极难察觉。
 func TestPureFiletimeToUint64(t *testing.T) {
 	tests := []struct {
 		name string
@@ -182,10 +180,7 @@ func TestPureFiletimeToUint64(t *testing.T) {
 }
 
 // TestPureSystemTimesMath 固化「Kernel 含 Idle」这一容易写错的口径。
-//
-// GetSystemTimes 的 kernelTime **已经包含** idleTime，所以
-// busy = (kernel - idle) + user，total = kernel + user。
-// 直接写 busy = kernel + user 会把 CPU 占用率显著高估。
+// kernelTime **已包含** idleTime：busy = (kernel - idle) + user，total = kernel + user；写成 busy = kernel + user 会显著高估占用率。
 func TestPureSystemTimesMath(t *testing.T) {
 	st := SystemTimes{Idle: 30, Kernel: 100, User: 20}
 	busy := (st.Kernel - st.Idle) + st.User
@@ -200,9 +195,7 @@ func TestPureSystemTimesMath(t *testing.T) {
 }
 
 // TestPureStructLayoutSystemTimes 确认 SystemTimes 就是三个连续的 uint64。
-//
-// 它直接映射 GetSystemTimes 的三个 FILETIME 出参；一旦被加字段或改类型，
-// 上面的算术口径和 API 调用都会失配，所以在这里显式钉住。
+// 它直接映射 GetSystemTimes 的三个 FILETIME 出参；一旦被加字段或改类型，上面的算术口径和 API 调用都会失配。
 func TestPureStructLayoutSystemTimes(t *testing.T) {
 	var st SystemTimes
 	if got := unsafe.Sizeof(st); got != 24 {

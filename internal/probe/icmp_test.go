@@ -13,7 +13,7 @@ import (
 )
 
 // TestICMPLoopback 用回环地址做真实探测：回环必然可达，
-// 因此这条用例同时验证了句柄管理、RTT 统计与载荷传递是否真的生效。
+// 因此这条用例同时验证了句柄管理、RTT 统计与载荷传递。
 func TestICMPLoopback(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -49,8 +49,14 @@ func TestICMPLoopback(t *testing.T) {
 	if res.LossPercent != 0 {
 		t.Errorf("LossPercent = %v，期望 0", res.LossPercent)
 	}
-	if res.MinRTT <= 0 || res.MaxRTT <= 0 || res.AvgRTT <= 0 {
-		t.Errorf("RTT 统计异常：Min=%v Avg=%v Max=%v（回环 RTT 应大于 0）", res.MinRTT, res.AvgRTT, res.MaxRTT)
+	// 回环 RTT 必须**接近 0**，而不是"大于 0"：ICMP_ECHO_REPLY.RoundTripTime 是整毫秒，
+	// 回环远小于 1ms，因此 0 才是正确值。
+	//
+	// 这条断言原来写的是 "MinRTT <= 0 即失败"，恰好把 IPAddr 字节序写反的缺陷掩盖了：
+	// 那时回环探测实际打到公网 1.0.0.127，RTT 恒为 195ms，永远"大于 0"，测试一路绿灯。
+	if res.MaxRTT > 50*time.Millisecond {
+		t.Errorf("回环 RTT 统计异常：Min=%v Avg=%v Max=%v（回环应在 1ms 内；50ms 以上的量级说明目的地址编码字节序写反，探测打到了公网地址）",
+			res.MinRTT, res.AvgRTT, res.MaxRTT)
 	}
 	if res.MinRTT > res.AvgRTT || res.AvgRTT > res.MaxRTT {
 		t.Errorf("RTT 单调性被破坏：Min=%v Avg=%v Max=%v", res.MinRTT, res.AvgRTT, res.MaxRTT)
@@ -74,14 +80,13 @@ func TestICMPDefaultPayloadAndOptions(t *testing.T) {
 	if res.Sent != 1 || res.Recv != 1 || !res.Success {
 		t.Errorf("单包回环探测结果异常：Sent=%d Recv=%d Success=%v", res.Sent, res.Recv, res.Success)
 	}
-	// 单包时 Min/Avg/Max 必须相等。
 	if res.MinRTT != res.AvgRTT || res.AvgRTT != res.MaxRTT {
 		t.Errorf("单包 RTT 统计应三者相等，实际 Min=%v Avg=%v Max=%v", res.MinRTT, res.AvgRTT, res.MaxRTT)
 	}
 }
 
 // TestICMPUnreachableTimesOutIsNotError 是丢包率正确性的关键断言：
-// RFC 5737 保留网段不可路由，"没回包"必须是结果而不是 error。
+// 不可路由目标的"没回包"必须是结果而不是 error。
 func TestICMPUnreachableTimesOutIsNotError(t *testing.T) {
 	if testing.Short() {
 		t.Skip("短模式跳过（需要等待超时）")
@@ -183,8 +188,7 @@ func TestICMPArgumentErrors(t *testing.T) {
 	}
 }
 
-// TestICMPContextCanceled 验证 ctx 取消能提前结束，
-// 且已完成的统计照常返回（不是错误、不补足到 Count）。
+// TestICMPContextCanceled 验证 ctx 取消能提前结束，且已完成的统计照常返回（不是错误、不补足到 Count）。
 func TestICMPContextCanceled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -212,14 +216,13 @@ func TestICMPContextCanceled(t *testing.T) {
 }
 
 // TestICMPTimeoutClassification 验证"超时"与"调用失败"的区分：
-// 目标不回包时 Err 为空（结果自洽），Ipv4 校验仍拦住 IPv6。
+// 目标不回包时 Err 为空（结果自洽），IPv4 校验仍拦住 IPv6。
 func TestICMPTimeoutClassification(t *testing.T) {
 	if testing.Short() {
 		t.Skip("短模式跳过（需要等待超时）")
 	}
 
-	// 让整体 context 先于单包超时到期：IcmpSendEcho 会返回超时/取消错误，
-	// 此时所有包都是调用级失败，必须报错而不是伪装成 100% 丢包。
+	// 让整体 context 先于单包超时到期：所有包都会是调用级失败，必须报错而不是伪装成 100% 丢包。
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
 
@@ -239,8 +242,7 @@ func TestICMPTimeoutClassification(t *testing.T) {
 	}
 }
 
-// TestICMPLoopbackIPStringForm 确认 net.ParseIP 的 16 字节表示也能正确发送
-// （ParseIP("127.0.0.1") 返回 16 字节形式，IcmpSendEcho 内部会 To4）。
+// TestICMPLoopbackIPStringForm 确认 net.ParseIP 的 16 字节表示也能正确发送（IcmpSendEcho 内部会 To4）。
 func TestICMPLoopbackIPStringForm(t *testing.T) {
 	ip := net.ParseIP("127.0.0.1")
 	if ip == nil || ip.To4() == nil {

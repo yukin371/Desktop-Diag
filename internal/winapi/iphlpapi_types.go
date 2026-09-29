@@ -5,21 +5,8 @@ package winapi
 import "golang.org/x/sys/windows"
 
 // 本文件是 Windows SDK 中 C 结构体到 Go 的逐字段映射。
-//
-// # 映射纪律
-//
-//  1. **字段顺序、类型宽度、对齐方式必须与 SDK 头文件完全一致**，不得合并、不得省略、
-//     不得添加填充字段。Go 不会重排结构体字段，因此只要宽度与顺序对齐，
-//     布局就与 MSVC 一致（amd64 上两侧均遵循同一套对齐规则）。
-//  2. 即使 MVP 用不到某字段（例如 Dhcpv6ClientDuid 之后的内容），
-//     **也必须完整声明**——否则 Next 指针偏移错位，遍历链表直接崩溃。
-//  3. 起头的匿名联合体（union { ULONGLONG Alignment; struct { ULONG Length; ... }; }）
-//     在 Go 中直接展开为两个连续字段（Length 在偏移 0，第二字段在偏移 4），
-//     这样得到的偏移与 C 侧一致；**不要**写成 `Alignment uint64` 后接子字段，
-//     那会把第二个字段推到偏移 8，整体错位 4 字节。
-//  4. 任何改动后必须运行 TestStructLayout。
-
-// ── 基础类型 ─────────────────────────────────────────────────
+// 字段顺序、类型宽度、对齐必须与 SDK 头文件完全一致：不得合并、不得省略、不得添加填充字段，否则 Next 指针偏移错位，遍历链表直接崩溃。
+// 起头的匿名联合体必须展开成两个连续字段（**不要**写成 Alignment uint64 后接子字段，那会把第二个字段推到偏移 8，整体错位 4 字节）。
 
 // ifLuid 对应 IF_LUID（一个 8 字节联合体，用 uint64 承载）。
 type ifLuid struct {
@@ -33,7 +20,6 @@ type rawSockaddr struct {
 }
 
 // socketAddress 对应 SOCKET_ADDRESS。
-//
 // 64 位下：lpSockaddr(8) + iSockaddrLength(4) → 12，尾部补齐到 16，对齐 8。
 type socketAddress struct {
 	LpSockaddr      *rawSockaddr
@@ -57,10 +43,7 @@ type sockaddrIn6 struct {
 	ScopeID  uint32
 }
 
-// ── 网卡链表节点 ─────────────────────────────────────────────
-
 // ipAdapterUnicastAddressLH 对应 IP_ADAPTER_UNICAST_ADDRESS_LH（64 字节）。
-//
 // 起头同样是联合体：Length(0) + Flags(4)。
 type ipAdapterUnicastAddressLH struct {
 	Length             uint32
@@ -94,7 +77,7 @@ type ipAdapterGatewayAddressLH struct {
 }
 
 // ipAdapterWinsServerAddressLH 对应 IP_ADAPTER_WINS_SERVER_ADDRESS_LH（32 字节）。
-// MVP 不解析其内容，但因为它在结构体里占一个指针位置，必须声明以保证后续偏移正确。
+// MVP 不解析其内容，但它在结构体里占一个指针位置，必须声明以保证后续偏移正确。
 type ipAdapterWinsServerAddressLH struct {
 	Length   uint32
 	Reserved uint32
@@ -103,13 +86,11 @@ type ipAdapterWinsServerAddressLH struct {
 }
 
 // ipAdapterAddressesLH 对应 IP_ADAPTER_ADDRESSES_LH（amd64 下 448 字节）。
-//
-// 这是本项目最大的结构体，也是风险 RK-01 的全部来源。
-// 字段全部按 iptypes.h 的顺序声明；不使用的字段同样保留。
+// 字段全部按 iptypes.h 的顺序声明；用不到的字段同样必须保留，否则其后的 Next 偏移错位。
 type ipAdapterAddressesLH struct {
 	Length  uint32 // +0   联合体低位：Length
 	IfIndex uint32 // +4   联合体高位：IfIndex
-	// ── 以下为实际使用的字段 ──
+	// 起头是匿名联合体：Length 在偏移 0、IfIndex 在偏移 4，不要另加 Alignment 字段。
 	Next                   *ipAdapterAddressesLH         // +8
 	AdapterName            *byte                         // +16  ANSI 的 {GUID}
 	FirstUnicastAddress    *ipAdapterUnicastAddressLH    // +24
@@ -148,8 +129,6 @@ type ipAdapterAddressesLH struct {
 	// sizeof = 448
 }
 
-// ── ICMP ─────────────────────────────────────────────────────
-
 // ipOptionInformation 对应 IP_OPTION_INFORMATION（16 字节）。
 type ipOptionInformation struct {
 	Ttl         uint8
@@ -162,7 +141,7 @@ type ipOptionInformation struct {
 
 // icmpEchoReply 对应 ICMP_ECHO_REPLY（40 字节）。
 type icmpEchoReply struct {
-	Address       uint32              // +0  IPAddr（网络字节序）
+	Address       uint32              // +0  IPAddr（内存字节即地址字节，见 ipAddrFromIPv4）
 	Status        uint32              // +4  IP_SUCCESS=0 表示成功
 	RoundTripTime uint32              // +8  毫秒
 	DataSize      uint16              // +12
@@ -171,8 +150,6 @@ type icmpEchoReply struct {
 	Options       ipOptionInformation // +24
 	// sizeof = 40
 }
-
-// ── 常量 ─────────────────────────────────────────────────────
 
 // Address family。
 const (
@@ -191,23 +168,12 @@ const (
 )
 
 // AFUnspec 是 AddressFamily 的 AF_UNSPEC：同时取得 IPv4 与 IPv6。
-//
-// 导出它是因为只查 IPv4 会漏掉"仅 IPv6"的机器（基线场景 S-05），
-// 而那种机器恰恰是最需要诊断报告的。
+// 导出它是因为只查 IPv4 会漏掉"仅 IPv6"的机器，而那恰恰是最需要诊断报告的机器。
 const AFUnspec = afUnspec
 
 // DefaultAdapterFlags 是本工具采集网卡时使用的标准 flags 组合。
-//
-// 选这三项的理由，逐条对应到需求：
-//   - gaaFlagIncludeGateways：没有网关地址就无法做网关 ICMP 探测（R-12~R-14），
-//     而 FirstGatewayAddress 只在这个标志下才有内容。
-//   - gaaFlagSkipAnycast / gaaFlagSkipMulticast：任播与组播地址不是本机配置，
-//     混进 IPv4/IPv6 列表会让人误以为网卡配了多个地址。
-//
-// 刻意**不**传 gaaFlagSkipDnsServer：DNS 服务器列表正是 R-03/R-04 的判据。
-//
-// 有意留在这里而不是让调用方自己拼：flags 与 API 语义绑定，
-// 散落在调用方只会让下一次改错的人不知道为什么要这么传。
+// 含 gaaFlagIncludeGateways：FirstGatewayAddress 只在这个标志下才有内容，没有它就无法做网关 ICMP 探测。
+// 不含 gaaFlagSkipDnsServer：DNS 服务器列表正是 DNS 判定所需的判据。
 const DefaultAdapterFlags = gaaFlagIncludeGateways | gaaFlagSkipAnycast | gaaFlagSkipMulticast
 
 // GetAdaptersAddresses 的错误码。ERROR_SUCCESS 即 0。
@@ -239,10 +205,7 @@ const (
 )
 
 // 以下导出常量供 collect 层做映射。
-//
-// 导出的是**数值**而不是「中文名」：把 IF_TYPE 6 该叫 "Ethernet" 还是
-// "以太网" 属于领域表达，应留在 internal/collect；winapi 只负责
-// 「6 就是 IF_TYPE_ETHERNET_CSMACD」这一层事实。
+// 只导出数值而不导出「中文名」：6 该叫 "Ethernet" 还是"以太网"属于领域表达，应留在 internal/collect。
 const (
 	IfTypeEthernetCSMACD   = ifTypeEthernetCSMACD
 	IfTypePPP              = ifTypePPP

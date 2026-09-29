@@ -9,16 +9,8 @@ import (
 	"time"
 )
 
-// 本文件是 winapi 层的**真机集成测试**：它会真的调用 Windows API。
-//
-// 布局断言测试（*_types_test.go）只能证明"我们声明的结构体与 SDK 一致"，
-// 证明不了"API 真的按这个结构体写数据"。本文件补上后半段：
-// 用系统返回的真实数值去验证映射正确——例如把 FriendlyName 与
-// net.Interfaces() 的名称逐项比对，一旦偏移错位，读到的就是乱码，
-// 比对必然失败。
-//
-// 这些测试依赖具体机器的硬件与网络状态，因此断言只针对"物理上必然成立"的性质
-// （数量非负、用量不超过总量、累计计数不回退），不做数值快照。
+// 本文件是 winapi 层的**真机集成测试**：它真的调用 Windows API，验证系统写回的数据能被正确解析。
+// 断言只针对物理上必然成立的性质（数量、单调性、上限），不做数值快照。
 
 func TestRuntimeGetAdaptersAddresses(t *testing.T) {
 	adapters, err := GetAdaptersAddresses(afUnspec, gaaFlagIncludeGateways|gaaFlagSkipAnycast|gaaFlagSkipMulticast)
@@ -29,9 +21,7 @@ func TestRuntimeGetAdaptersAddresses(t *testing.T) {
 		t.Fatal("GetAdaptersAddresses 返回 0 个适配器，真机上不可能——布局或解析逻辑有误")
 	}
 
-	// 每个节点的 Length 已在 parseAdapters 内自检：系统写回的值必须不小于
-	// 我们声明的 sizeof(ipAdapterAddressesLH)。若 SDK 布局与映射不一致，
-	// 那次自检会直接返回错误，根本走不到这里。
+	// 每个节点的 Length 已在 parseAdapters 内自检，布局与映射不一致时根本走不到这里。
 
 	for _, a := range adapters {
 		t.Logf("ifIndex=%-4d v6IfIndex=%-4d ifType=%-4d operStatus=%d mtu=%-5d dhcp=%v\n"+
@@ -43,8 +33,7 @@ func TestRuntimeGetAdaptersAddresses(t *testing.T) {
 			a.IPv4, a.IPv6, a.DNS, a.Gateways)
 	}
 
-	// 交叉验证：Go 标准库的 net.Interfaces() 在 Windows 上同样基于
-	// GetAdaptersAddresses 实现，但用的是它自己独立维护的结构体定义。
+	// 交叉验证：net.Interfaces() 在 Windows 上也基于 GetAdaptersAddresses，但用的是独立维护的结构体定义；
 	// 两套独立映射得到同样的 IfIndex / 名称 / MAC，就说明我们的映射是对的。
 	ifaces, err := net.Interfaces()
 	if err != nil {
@@ -206,8 +195,7 @@ func TestRuntimeGetSystemTimes(t *testing.T) {
 	}
 
 	idle := b.Idle - a.Idle
-	// 关键语义：kernel 时间**包含** idle，所以总时间 = kernel + user，
-	// 忙时间 = 总时间 - idle。忘记减 idle 会把空闲机器算成满载。
+	// 关键语义：kernel 时间包含 idle，总时间 = kernel + user，忙时间 = 总时间 - idle。
 	total := (b.Kernel - a.Kernel) + (b.User - a.User)
 	if total == 0 {
 		t.Fatal("250ms 内累计时间没有增长，GetSystemTimes 可能没有真正生效")
@@ -276,14 +264,11 @@ func TestRuntimeGetComputerNameEx(t *testing.T) {
 }
 
 func TestRuntimeIsElevated(t *testing.T) {
-	// IsElevated 不应 panic，且结果必须与"当前进程能否打开受限资源"的直觉一致。
-	// 这里不断言真值：测试可能在非提升的 shell 中运行，那本身是合法场景。
+	// 不断言真值：测试可能在非提升的 shell 中运行，那本身是合法场景。
 	elevated := IsElevated()
 	t.Logf("当前进程是否提升：%v", elevated)
 
-	// 补充确认：GetDiskFreeSpaceEx 属于**不需要提升**即可成功的只读 API
-	// （这正是本工具能在非管理员账户下正常工作的前提之一）。
-	// 因此未提升时它必须成功；若失败，说明不是权限问题而是调用方式有问题。
+	// GetDiskFreeSpaceEx 是**不需要提升**即可成功的只读 API，未提升时它必须成功。
 	if !elevated {
 		if _, _, _, err := GetDiskFreeSpaceEx(`C:\`); err != nil {
 			t.Errorf("未提升状态下 GetDiskFreeSpaceEx 失败（该 API 本不需要提升，应属调用错误）: %v", err)
@@ -301,8 +286,7 @@ func TestRuntimeConsole(t *testing.T) {
 	}
 }
 
-// 固定 32 字节载荷：ICMP 回显数据长度对判断"是否为本工具发出的包"没有意义，
-// 但固定长度能让不同机器的结果可比（基线 C-03：载荷不含任何终端标识）。
+// 固定 32 字节载荷，让不同机器的结果可比；载荷不含任何终端标识（基线 C-03）。
 var icmpTestPayload = []byte("Desktop-Diag ICMP probe payload!") // 正好 32 字节
 
 func TestRuntimeIcmpLoopback(t *testing.T) {
@@ -326,6 +310,15 @@ func TestRuntimeIcmpLoopback(t *testing.T) {
 	}
 	if !res.Replied() {
 		t.Fatalf("回环地址没有应答，Status=%d（回环必然可达，说明回复缓冲区或结构体解析有误）", res.Status)
+	}
+
+	// 「有应答」不足以证明探测的是回环：IPAddr 写反会去探测 1.0.0.127，那是一个真实
+	// 存在、会正常应答的公网地址，Status 一样是 0。来源地址和 RTT 才能钉住字节序。
+	if res.Address != "127.0.0.1" {
+		t.Errorf("回环应答的来源地址 = %q，期望 127.0.0.1（回复里的 IPAddr 解码字节序写反）", res.Address)
+	}
+	if res.RoundTripTime > 50 {
+		t.Errorf("回环 RTT = %d ms，超过 50ms（回环应在 1ms 内；这个量级说明目的地址编码字节序写反，探测打到了公网地址）", res.RoundTripTime)
 	}
 	t.Logf("回环应答：来自 %s，RTT=%d ms，DataSize=%d", res.Address, res.RoundTripTime, res.DataSize)
 }
@@ -354,8 +347,7 @@ func TestRuntimeIcmpUnreachableTimesOut(t *testing.T) {
 		t.Fatal("192.0.2.1 竟然应答了，说明回复解析读到了错误的内存")
 	}
 
-	// 关键断言：超时必须表现为"没收到回包"的结果，而不是 error。
-	// 若这里变成 error，丢包率就会被误算成"探测失败"，R-12 网关丢包判定会失准。
+	// 超时必须表现为"没收到回包"的结果而不是 error，否则丢包率会被误算成"探测失败"。
 	validNoReply := res.Status == ipReqTimedOut ||
 		res.Status == ipDestNetUnreachable ||
 		res.Status == ipDestHostUnreachable
@@ -371,8 +363,7 @@ func TestRuntimeIcmpUnreachableTimesOut(t *testing.T) {
 }
 
 func TestRuntimeIcmpInvalidHandleFails(t *testing.T) {
-	// 无效句柄必须返回 error，而不是静默产生"没收到回包"的假象——
-	// 否则句柄失效会被误读成网络不通，产生误导性的严重告警。
+	// 无效句柄必须返回 error，否则句柄失效会被误读成网络不通，产生误导性的严重告警。
 	_, err := IcmpSendEcho(0, net.IPv4(127, 0, 0, 1), icmpTestPayload, 200*time.Millisecond)
 	if err == nil {
 		t.Error("传入无效句柄时 IcmpSendEcho 没有返回错误")
@@ -390,9 +381,7 @@ func TestRuntimeGetWindowsDirectory(t *testing.T) {
 		t.Fatal("Windows 目录为空")
 	}
 
-	// 必须形如 "X:\..."，这样调用方才能取出盘符。
-	// 基线缺陷 B5 指出硬编码 "C:" 会在系统盘非 C 的机器上得出错误结论，
-	// 本测试是"盘符来自系统而非写死"这一修复的证据。
+	// 必须形如 "X:\..."，调用方才能取出盘符；硬编码 "C:" 会在系统盘非 C 的机器上得出错误结论（基线缺陷 B5）。
 	if len(dir) < 3 || dir[1] != ':' || (dir[2] != '\\' && dir[2] != '/') {
 		t.Errorf("Windows 目录 %q 不是「盘符:\\...」形式，无法据此求系统盘", dir)
 	}
