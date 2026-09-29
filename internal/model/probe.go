@@ -30,11 +30,8 @@ func (k ProbeKind) KindLabel() string {
 
 // ProbeResult 是一次探测的完整结果。
 //
-// Skipped 与 Success=false 是两种不同语义，不可混用：
-//   - Skipped=true   → 本次探测不适用（如无活动网卡），不得据此告警
-//   - Success=false  → 探测确实执行了但失败，可据此告警
-//
-// 混用会导致"无网卡"被误报成"网络中断"。
+// Skipped=true（探测不适用，如无活动网卡）与 Success=false（确实执行了但失败）
+// 是两种语义，混用会把"无网卡"误报成"网络中断"，规则一律以 Skipped 为准。
 type ProbeResult struct {
 	Kind        ProbeKind
 	AdapterName string // ICMP 探测归属网卡；其他探测为空
@@ -62,8 +59,6 @@ func (p ProbeResult) Executed() bool {
 func (p ProbeResult) TotalLoss() bool {
 	return p.Kind == ProbeICMPGateway && p.Sent > 0 && p.Recv == 0
 }
-
-// ── 故障层级 ─────────────────────────────────────────────────
 
 // 层级结论取值，对应基线第 6 节的 7 行判定矩阵。
 const (
@@ -105,8 +100,8 @@ type LayerConclusion struct {
 	Severity Severity
 }
 
-// FindProbe 按探测类型返回第一条匹配结果，未找到时 ok=false。
-// 供规则函数与报告渲染使用，避免各处重复写循环。
+// FindProbe 按探测类型返回第一条匹配结果，未找到时 ok=false；
+// 供规则函数与报告渲染复用，避免各处重复写循环。
 func (s *Snapshot) FindProbe(kind ProbeKind) (ProbeResult, bool) {
 	for _, p := range s.Probes {
 		if p.Kind == kind {

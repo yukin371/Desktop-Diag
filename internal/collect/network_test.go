@@ -100,7 +100,7 @@ func TestDetectVirtual(t *testing.T) {
 		{"WLAN", "Intel(R) Wi-Fi 6 AX200 160MHz", model.IfTypeIEEE80211, false, ""},
 		{"Ethernet 2", "Realtek PCIe GbE Family Controller", model.IfTypeEthernet, false, ""},
 
-		// 本类机器上真实存在的虚拟网卡（装上 VMware/Hyper-V 后会出现 4~8 块）。
+		// 装上 VMware/Hyper-V 后会出现的虚拟网卡（会有 4~8 块）。
 		{"以太网 2", "VMware Virtual Ethernet Adapter for VMnet8", model.IfTypeEthernet, true, model.VirtualVMware},
 		{"vEthernet (Default Switch)", "Hyper-V Virtual Ethernet Adapter", model.IfTypeEthernet, true, model.VirtualHyperV},
 		{"VirtualBox Host-Only Network", "VirtualBox Host-Only Ethernet Adapter", model.IfTypeEthernet, true, model.VirtualVirtualBox},
@@ -110,10 +110,7 @@ func TestDetectVirtual(t *testing.T) {
 		{"回环", "Software Loopback Interface 1", model.IfTypeLoopback, true, model.VirtualLoopback},
 		{"本地连接* 1", "Microsoft Wi-Fi Direct Virtual Adapter", model.IfTypeEthernet, true, model.VirtualOther},
 
-		// 覆盖网络（overlay VPN）。本机实测存在 ZeroTier：它是 Up 状态的
-		// 软件接口，网关是 25.255.255.254（IPv4 保留段里的合成地址）。
-		// 若判为物理网卡，探测会失败并被记为"诊断不完整"；
-		// 更糟的情况是被算成"网关 100% 丢包"，从而误报内网链路中断。
+		// 覆盖网络（overlay VPN）：网关是保留段里的合成地址，判为物理网卡会误报内网链路中断。
 		{"ZeroTier One [b9a18a606fcb86b5]", "ZeroTier One [b9a18a606fcb86b5]", model.IfTypeEthernet, true, model.VirtualOverlay},
 		{"Tailscale", "Tailscale Tunnel", model.IfTypeEthernet, true, model.VirtualOverlay},
 		{"Hamachi", "LogMeIn Hamachi Virtual Ethernet Adapter", model.IfTypeEthernet, true, model.VirtualOverlay},

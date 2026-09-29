@@ -10,11 +10,7 @@ import (
 	"golang.org/x/sys/windows/registry"
 )
 
-// 本文件同时包含两类测试：
-//   - 纯函数测试（ParseNameServerList、dropEmptyStrings）：任何机器上都必须通过。
-//   - 真机注册表测试：读取真实存在的键，验证只读访问链路的可用性。
-//
-// 所有真机用例都只读、且只碰**必然存在**的系统键，不做任何写入。
+// 本文件含纯函数测试与真机注册表测试；真机部分只读，且只碰必然存在的系统键。
 
 func TestPureParseNameServerList(t *testing.T) {
 	tests := []struct {
@@ -57,14 +53,11 @@ func TestPureDropEmptyStrings(t *testing.T) {
 	if len(got) != 2 || got[0] != "a" || got[1] != "b" {
 		t.Errorf("dropEmptyStrings = %v，期望 [a b]", got)
 	}
-	// 必须是新切片：调用方会直接把它当成"已清理的副本"使用，
-	// 若返回原切片的下标别名，后续 append 可能污染入参。
+	// 必须是新切片：返回入参的别名会让调用方后续 append 污染原切片。
 	if len(in) != 5 {
 		t.Errorf("dropEmptyStrings 不应修改入参切片，实际长度变成了 %d", len(in))
 	}
 }
-
-// ── 真机注册表测试 ────────────────────────────────────────────
 
 func TestRuntimeRegWindowsVersion(t *testing.T) {
 	name, err := RegReadString64(registry.LOCAL_MACHINE, RegPathWindowsVersion, RegValueProductName)
@@ -76,8 +69,7 @@ func TestRuntimeRegWindowsVersion(t *testing.T) {
 	}
 	t.Logf("ProductName = %q", name)
 
-	// DisplayVersion 在部分精简版系统上可能缺失，缺失是可接受的，
-	// 但一旦存在就必须是非空文本。
+	// DisplayVersion 在部分精简版系统上可能缺失；一旦存在就必须是非空文本。
 	if v, err := RegReadString64(registry.LOCAL_MACHINE, RegPathWindowsVersion, RegValueDisplayVersion); err == nil {
 		if strings.TrimSpace(v) == "" {
 			t.Error("DisplayVersion 存在但为空")
@@ -92,10 +84,7 @@ func TestRuntimeRegWindowsVersion(t *testing.T) {
 	t.Logf("CurrentBuild = %q", build)
 }
 
-// TestRuntimeRegNotFound 验证"不存在"能被精确识别。
-//
-// 这条区分至关重要：把"值不存在"误当成"读取失败"会把正常机器报成诊断不完整；
-// 反过来把"读取失败"误当成"值为空"会让 DNS 告警静默漏报（基线场景 S-17）。
+// TestRuntimeRegNotFound 验证"不存在"能被精确识别：把"读取失败"误当成"值为空"会让 DNS 告警静默漏报。
 func TestRuntimeRegNotFound(t *testing.T) {
 	_, err := RegReadString(registry.LOCAL_MACHINE, RegPathWindowsVersion, "DesktopDiagNoSuchValue")
 	if err == nil {
@@ -124,10 +113,7 @@ func TestRuntimeRegNotFound(t *testing.T) {
 	}
 }
 
-// TestRuntimeRegEnumTcpipInterfaces 验证枚举链路。
-//
-// 该键下的子键名就是网卡的 {GUID}，collect 层靠它与 GetAdaptersAddresses 的
-// AdapterName 配对，从而拿到每块网卡各自的 DNS 配置。
+// TestRuntimeRegEnumTcpipInterfaces 验证枚举链路：子键名就是网卡 {GUID}，collect 靠它与 AdapterName 配对。
 func TestRuntimeRegEnumTcpipInterfaces(t *testing.T) {
 	names, err := RegEnumSubKeys(registry.LOCAL_MACHINE, RegPathTcpipInterfaces)
 	if err != nil {
@@ -164,7 +150,7 @@ func TestRuntimeRegReadFirstString(t *testing.T) {
 		t.Error("回落得到的值不应为空")
 	}
 
-	// 全部候选都不存在 → ErrRegNotFound，而不是返回一个空字符串的成功结果。
+	// 全部候选都不存在时必须是 ErrRegNotFound，而不是返回空串的成功结果。
 	if _, _, err := RegReadFirstString(registry.LOCAL_MACHINE, RegPathWindowsVersion,
 		"DesktopDiagNoSuchValue", "DesktopDiagNoSuchValue2"); !errors.Is(err, ErrRegNotFound) {
 		t.Errorf("全部候选缺失时应返回 ErrRegNotFound，实际 %v", err)
@@ -184,7 +170,7 @@ func TestRuntimeRegReadFirstString(t *testing.T) {
 
 // TestRuntimeRegReadUint32 验证 DWORD 读取（EnableDHCP 是 DWORD）。
 func TestRuntimeRegReadUint32(t *testing.T) {
-	// UBR 在 Windows 10 1709+ 是 DWORD。缺失时跳过，不算失败。
+	// UBR 在 Windows 10 1709+ 是 DWORD；缺失时跳过，不算失败。
 	v, err := RegReadUint32(registry.LOCAL_MACHINE, RegPathWindowsVersion, RegValueUBR)
 	if err != nil {
 		t.Skipf("UBR 不可读（部分系统没有该值），跳过: %v", err)

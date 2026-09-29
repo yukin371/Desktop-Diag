@@ -7,8 +7,7 @@ import (
 	"unsafe"
 )
 
-// kernel32 / ntdll 侧手写结构体的布局断言。
-// 期望值来源与 iphlpapi_types_test.go 相同：Windows SDK 头文件 + tools/layout-probe。
+// kernel32 / ntdll 侧手写结构体的布局断言；期望值来源与 iphlpapi_types_test.go 相同。
 
 func TestStructLayoutMemoryStatusEx(t *testing.T) {
 	var m MemoryStatusEx
@@ -34,8 +33,7 @@ func TestStructLayoutMemoryStatusEx(t *testing.T) {
 		}
 	}
 
-	// sizeof 与 dwLength 必须一致：GlobalMemoryStatusEx 会拿 dwLength 做校验，
-	// 任何多余的填充都会让 API 返回 ERROR_INVALID_PARAMETER(87)。
+	// sizeof 必须与 dwLength 一致：任何多余填充都会让 API 返回 ERROR_INVALID_PARAMETER(87)。
 	if got := unsafe.Sizeof(MemoryStatusEx{}); got != MemoryStatusExSize {
 		t.Errorf("MemoryStatusEx sizeof = %d, 期望 %d", got, MemoryStatusExSize)
 	}
@@ -46,11 +44,7 @@ func TestStructLayoutMemoryStatusEx(t *testing.T) {
 }
 
 // TestStructLayoutRtlOsVersionInfoW 断言的是 **非 EX** 版本（RTL_OSVERSIONINFOW，276 字节）。
-//
-// 注意不要把这个期望值改成 284：284 是 RTL_OSVERSIONINFOEXW 的大小，后者在
-// szCSDVersion 之后还有 wServicePackMajor 等 5 个字段。RtlGetVersion 按这个
-// Size 字段判断调用方传的是哪个版本，填 284 会让它按 284 字节写我们的
-// 276 字节结构体，导致越界写。tools/layout-probe 已实测两者的差异。
+// 不要把这个期望值改成 284：那是 EX 版本的大小，填错会让 RtlGetVersion 按 284 字节写我们的 276 字节结构体。
 func TestStructLayoutRtlOsVersionInfoW(t *testing.T) {
 	var v RtlOsVersionInfoW
 

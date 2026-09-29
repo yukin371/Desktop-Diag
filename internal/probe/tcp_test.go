@@ -12,8 +12,7 @@ import (
 	"github.com/yukin371/desktop-diag/internal/model"
 )
 
-// TestTCPRefusedIsNotError 覆盖"连不通是诊断结论"这一核心约定。
-// 127.0.0.1:1 在 Windows 上没有任何服务监听，必然被立刻拒绝。
+// TestTCPRefusedIsNotError 覆盖"连不通是诊断结论"这一核心约定：127.0.0.1:1 无服务监听，必然被立刻拒绝。
 func TestTCPRefusedIsNotError(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -40,8 +39,7 @@ func TestTCPRefusedIsNotError(t *testing.T) {
 	t.Logf("127.0.0.1:1 → Success=%v Err=%q 耗时=%v", res.Success, res.Err, res.Duration)
 }
 
-// TestTCPUnroutableTimesOut 用 RFC 5737 保留网段验证超时路径，
-// 同时确认超时错误文本与"连接被拒绝"可以区分。
+// TestTCPUnroutableTimesOut 用不可路由的保留网段验证超时路径，并确认它与"连接被拒绝"可区分。
 func TestTCPUnroutableTimesOut(t *testing.T) {
 	if testing.Short() {
 		t.Skip("短模式跳过（需要等待超时）")

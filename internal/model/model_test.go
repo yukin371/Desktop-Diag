@@ -5,8 +5,6 @@ import (
 	"time"
 )
 
-// ── Addr ─────────────────────────────────────────────────────
-
 func TestAddrIsAPIPA(t *testing.T) {
 	tests := []struct {
 		ip   string
@@ -47,8 +45,6 @@ func TestAddrIsLoopback(t *testing.T) {
 		}
 	}
 }
-
-// ── Adapter 派生方法 ─────────────────────────────────────────
 
 func TestAdapterIsActive(t *testing.T) {
 	tests := []struct {
@@ -129,8 +125,6 @@ func TestAdapterFirstGateway(t *testing.T) {
 	}
 }
 
-// ── Snapshot.ActivePhysicalAdapters ──────────────────────────
-
 func TestActivePhysicalAdapters(t *testing.T) {
 	up := func(a Adapter) Adapter { a.OperStatus = OperStatusUp; return a }
 
@@ -199,8 +193,6 @@ func TestActivePhysicalAdaptersDoesNotMutate(t *testing.T) {
 		t.Fatal("ActivePhysicalAdapters 返回的元素与原快照共享了可变状态")
 	}
 }
-
-// ── Snapshot.IPv6OnlyLinkLocal（R-05 输入）───────────────────
 
 func TestIPv6OnlyLinkLocal(t *testing.T) {
 	upEth := func(a Adapter) Adapter {
@@ -288,8 +280,6 @@ func TestIPv6OnlyLinkLocal(t *testing.T) {
 	}
 }
 
-// ── Health ───────────────────────────────────────────────────
-
 func TestHealthUsedBytes(t *testing.T) {
 	h := Health{MemTotalBytes: 100, MemAvailBytes: 40, DiskTotalBytes: 1000, DiskFreeBytes: 250}
 	if got := h.MemUsedBytes(); got != 60 {
@@ -308,8 +298,6 @@ func TestHealthUsedBytes(t *testing.T) {
 		t.Errorf("异常磁盘输入 DiskUsedBytes() = %d, want 0", got)
 	}
 }
-
-// ── ProbeResult / Snapshot 查找 ──────────────────────────────
 
 func TestProbeResultSemantics(t *testing.T) {
 	skipped := ProbeResult{Kind: ProbeICMPGateway, Skipped: true, SkipReason: "无活动网卡"}
@@ -330,7 +318,6 @@ func TestProbeResultSemantics(t *testing.T) {
 		t.Error("部分丢包不得判定为 100% 丢包")
 	}
 
-	// 非 ICMP 探测不参与丢包判定
 	dns := ProbeResult{Kind: ProbeDNSSystem, Sent: 0, Recv: 0}
 	if dns.TotalLoss() {
 		t.Error("DNS 探测不得被判定为丢包")
@@ -362,7 +349,6 @@ func TestSnapshotFindProbe(t *testing.T) {
 }
 
 func TestProbeKindLabel(t *testing.T) {
-	// 每种类型都必须有可读标签，未知类型回退为原值（不得为空）
 	for _, k := range []ProbeKind{ProbeICMPGateway, ProbeDNSSystem, ProbeDNSDirect, ProbeTCP443} {
 		if k.KindLabel() == "" {
 			t.Errorf("ProbeKind(%q).KindLabel() 返回空串", k)
@@ -372,8 +358,6 @@ func TestProbeKindLabel(t *testing.T) {
 		t.Errorf("未知类型的 KindLabel() = %q, want %q", got, "unknown")
 	}
 }
-
-// ── Issue / Severity / Category ──────────────────────────────
 
 func TestSeverityString(t *testing.T) {
 	tests := []struct {
@@ -422,7 +406,6 @@ func TestCountSeverityAndHasSevere(t *testing.T) {
 		t.Error("空列表 HasSevere 应为 false")
 	}
 
-	// SevOK 不计入任何告警计数
 	mixed := []Issue{{Severity: SevOK}, {Severity: SevSevere}}
 	s2, w2 := CountSeverity(mixed)
 	if s2 != 1 || w2 != 0 {
@@ -479,8 +462,6 @@ func TestNormalizeEvidence(t *testing.T) {
 	}
 }
 
-// ── Snapshot 写入辅助 ────────────────────────────────────────
-
 func TestSnapshotAddRawAndFailure(t *testing.T) {
 	var s Snapshot
 	s.AddRaw("网络适配器", "GetAdaptersAddresses", "Index=1 Name=以太网")
@@ -498,7 +479,6 @@ func TestSnapshotAddRawAndFailure(t *testing.T) {
 	}
 }
 
-// Snapshot 必须能承载时间字段，且 BootTime 与 Uptime 的关系由采集层保证。
 func TestSnapshotStartedAt(t *testing.T) {
 	now := time.Now()
 	s := Snapshot{StartedAt: now, Host: Host{Uptime: 2 * time.Hour}}

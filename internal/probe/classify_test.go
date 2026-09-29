@@ -28,7 +28,7 @@ func boolToInt(b bool) int {
 	return 0
 }
 
-// dnsProbe 构造 DNS 探测结果。kind 由 resolver 是否为空决定，与实现保持一致。
+// dnsProbe 构造 DNS 探测结果；kind 与实现一致地由 resolver 决定。
 func dnsProbe(resolver string, success bool) model.ProbeResult {
 	return model.ProbeResult{
 		Kind:     DNSKind(resolver),
@@ -321,8 +321,7 @@ func TestClassify(t *testing.T) {
 				{Kind: model.ProbeTCP443, Target: "223.5.5.5:443", Skipped: true},
 				{Kind: model.ProbeTCP443, Target: "119.29.29.29:443", Skipped: true},
 			},
-			// 全部 TCP 探测被跳过 = 从未做 TCP 探测，按"证据不足"处理；
-			// 若这里被算成 443 不通，跳过探测就会变成误报。
+			// 全部 TCP 探测被跳过 = 从未做过 TCP 探测，按"证据不足"处理；若被算成 443 不通，跳过就会变成误报。
 			wantLevel:   model.LevelUndetermined,
 			wantSummary: "探测数据不足，无法确定故障层级",
 			wantSev:     model.SevWarning,

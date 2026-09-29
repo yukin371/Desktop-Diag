@@ -8,13 +8,8 @@ import (
 	"github.com/yukin371/desktop-diag/internal/model"
 )
 
-// 本文件按基线第 6.2 节的规则表实现 R-01 … R-19。
-//
-// 每条规则的 register 调用同时给出「人类可读的触发条件」（Condition）。
-// 它必须与实际实现保持一致 —— 阶段 4 的元测试会检查它非空，
-// 阶段 6 会把它渲染成规则文档，避免"代码改了文档没改"。
-
-// ── 本机 IP 配置类 ────────────────────────────────────────────
+// 本文件按基线 6.2 节的规则表实现 R-01 … R-19。
+// register 里的 Condition 必须与实际实现一致：阶段 6 直接把它渲染成规则文档。
 
 func init() {
 	register(ruleEntry{
@@ -58,7 +53,6 @@ func init() {
 		Fn:        ruleIPv6OnlyLinkLocal,
 	})
 
-	// ── 系统健康度类 ──────────────────────────────────────────
 	register(ruleEntry{
 		ID:        "R-06",
 		Severity:  model.SevSevere,
@@ -92,7 +86,6 @@ func init() {
 		Fn:        ruleCPUWarn,
 	})
 
-	// ── 存储类 ────────────────────────────────────────────────
 	register(ruleEntry{
 		ID:        "R-10",
 		Severity:  model.SevWarning,
@@ -110,7 +103,6 @@ func init() {
 		Fn:        ruleDiskSevere,
 	})
 
-	// ── 连通性类 ──────────────────────────────────────────────
 	register(ruleEntry{
 		ID:        "R-12",
 		Severity:  model.SevWarning,
@@ -168,9 +160,8 @@ func init() {
 		Fn:        ruleICMPFiltered,
 	})
 
-	// ── 诊断完整性类 ──────────────────────────────────────────
-	// Deferred: true —— 这条规则读 Snapshot.Failures，必须等其余规则全部跑完
-	// 才能结算，否则会漏掉后到（含被 recover 兜住）的失败项。
+	// Deferred: true —— 它读 Snapshot.Failures，必须等其余规则全部跑完才能结算，
+	// 否则会漏掉后到（含被 recover 兜住）的失败项。
 	register(ruleEntry{
 		ID:        "R-19",
 		Severity:  model.SevWarning,
@@ -181,8 +172,6 @@ func init() {
 		Fn:        rulePartialData,
 	})
 }
-
-// ── 本机 IP 配置类实现 ────────────────────────────────────────
 
 func ruleAPIPA(s *model.Snapshot) []model.Issue {
 	var out []model.Issue
@@ -317,8 +306,6 @@ func ruleIPv6OnlyLinkLocal(s *model.Snapshot) []model.Issue {
 	}}
 }
 
-// ── 系统健康度类实现 ──────────────────────────────────────────
-
 func ruleMemSevere(s *model.Snapshot) []model.Issue {
 	if !s.Health.MemKnown || s.Health.MemUsedPercent < MemSeverePercent {
 		return nil
@@ -389,8 +376,6 @@ func cpuIssue(s *model.Snapshot, id string, sev model.Severity, title, detail st
 	}
 }
 
-// ── 存储类实现 ────────────────────────────────────────────────
-
 func ruleDiskWarn(s *model.Snapshot) []model.Issue {
 	h := s.Health
 	if !h.DiskKnown || h.DiskFreeBytes < DiskSevereFreeBytes || h.DiskFreeBytes >= DiskWarnFreeBytes {
@@ -433,12 +418,8 @@ func diskIssue(s *model.Snapshot, id string, sev model.Severity, title string) m
 	}
 }
 
-// ── 连通性类实现 ──────────────────────────────────────────────
-
-// gatewayProbes 返回全部**真正执行过**的网关探测（跳过因无网关/无线未连接而跳过的项）。
-//
-// 把 Skipped 的项排除掉是多项规则的共同前提：没探测过不等于探测失败，
-// 混淆两者会凭空报出"网关不可达"。
+// gatewayProbes 返回全部真正执行过的网关探测。
+// 排除 Skipped 是 R-12 ~ R-14 / R-18 的共同前提：没探测过不等于探测失败。
 func gatewayProbes(s *model.Snapshot) []model.ProbeResult {
 	var out []model.ProbeResult
 	for _, p := range s.FindProbes(model.ProbeICMPGateway) {
@@ -450,7 +431,7 @@ func gatewayProbes(s *model.Snapshot) []model.ProbeResult {
 	return out
 }
 
-// gatewayFailed 报告是否存在"确实执行了、且一个回包都没收到"的网关探测。
+// gatewayFailed 报告是否有探测确实执行过、却一个回包都没收到。
 func gatewayFailed(s *model.Snapshot) bool {
 	for _, p := range gatewayProbes(s) {
 		if p.Recv == 0 {
@@ -460,7 +441,6 @@ func gatewayFailed(s *model.Snapshot) bool {
 	return false
 }
 
-// tcpProbes 返回全部真正执行过的 TCP 443 探测。
 func tcpProbes(s *model.Snapshot) []model.ProbeResult {
 	var out []model.ProbeResult
 	for _, p := range s.FindProbes(model.ProbeTCP443) {
@@ -472,7 +452,6 @@ func tcpProbes(s *model.Snapshot) []model.ProbeResult {
 	return out
 }
 
-// allTCPFailed 报告"所有执行过的 443 探测都失败"，且至少执行过一次。
 func allTCPFailed(s *model.Snapshot) bool {
 	probes := tcpProbes(s)
 	if len(probes) == 0 {
@@ -486,7 +465,6 @@ func allTCPFailed(s *model.Snapshot) bool {
 	return true
 }
 
-// anyTCPSuccess 报告是否至少有一个 443 探测成功。
 func anyTCPSuccess(s *model.Snapshot) bool {
 	for _, p := range tcpProbes(s) {
 		if p.Success {
@@ -537,7 +515,7 @@ func ruleGatewayLatency(s *model.Snapshot) []model.Issue {
 	var out []model.Issue
 	for _, p := range gatewayProbes(s) {
 		if p.Recv == 0 {
-			continue // 没有回包就无从谈延迟
+			continue
 		}
 		if p.AvgRTT < timeMillisFromFloat(ICMPLatencyWarnMs) {
 			continue
@@ -568,10 +546,8 @@ func ruleGatewayUnreachable(s *model.Snapshot) []model.Issue {
 		if p.Recv != 0 {
 			continue
 		}
-		// 关键守卫：网关"ICMP 无响应"但公网 443 可达时，几乎可以断定是
-		// ICMP 被安全设备拦截，而不是内网真的断了 —— 那正是 R-18 的场景。
-		// 此时仍报 SEVERE「内网链路中断」会与 R-18 的结论互相矛盾，
-		// 把一次"被防火墙拦了 ping"误导成严重故障。
+		// 关键守卫：网关无 ICMP 响应但公网 443 可达时，是 ICMP 被安全设备拦截而非
+		// 内网中断（那正是 R-18 的场景）；此处再报「内网链路中断」会与 R-18 自相矛盾。
 		if anyTCPSuccess(s) {
 			continue
 		}
@@ -644,8 +620,7 @@ func ruleWANPortBlocked(s *model.Snapshot) []model.Issue {
 	if !allTCPFailed(s) {
 		return nil
 	}
-	// 网关确实不通时不报本条：那种情况 R-14 已经给出了更准确的结论，
-	// 再说「内网正常、外网中断」是自相矛盾的。
+	// 网关确实不通时不报本条：R-14 已给出更准确的结论，再说「内网正常、外网中断」自相矛盾。
 	if gatewayFailed(s) {
 		return nil
 	}
@@ -695,8 +670,6 @@ func ruleICMPFiltered(s *model.Snapshot) []model.Issue {
 	}}
 }
 
-// ── 诊断完整性实现 ────────────────────────────────────────────
-
 func rulePartialData(s *model.Snapshot) []model.Issue {
 	if len(s.Failures) == 0 {
 		return nil
@@ -726,22 +699,15 @@ func rulePartialData(s *model.Snapshot) []model.Issue {
 	}}
 }
 
-// ── 小工具 ────────────────────────────────────────────────────
-
-// millisecond 是 time.Millisecond 的纳秒数，用于把 time.Duration 换算成毫秒显示。
 const millisecond = int64(1000 * 1000)
 
-// timeMillisFromFloat 把毫秒阈值转成 time.Duration。
-//
-// 阈值是 float64（便于书写 150.0），而 RTT 是 time.Duration，
-// 比较前必须先归一化到同一单位，否则会出现"拿纳秒比毫秒"的经典错误。
+// timeMillisFromFloat 把 float64 毫秒阈值归一化成 time.Duration。
+// 阈值用 float64 便于书写、RTT 是 Duration，不归一化就会"拿纳秒比毫秒"。
 func timeMillisFromFloat(ms float64) time.Duration {
 	return time.Duration(ms * float64(millisecond))
 }
 
-// formatGiB 把字节数格式化成 GiB（1024³）。
-//
-// 按 GiB 计算但显示为 GB：这与 Windows 资源管理器、磁盘管理的显示口径一致。
+// formatGiB 把字节数按 1024³ 换算、但标签写 GB，与资源管理器/磁盘管理的口径一致；
 // 若改用十进制 GB，同一块盘会出现"工具说 931 GB、系统说 868 GB"的困惑。
 func formatGiB(b uint64) string {
 	const gib = 1 << 30
@@ -762,7 +728,6 @@ func orNone(s string) string {
 	return s
 }
 
-// collectDNSList 汇总全部活动网卡的 DNS，用于在证据里展示"本机配置了什么"。
 func collectDNSList(s *model.Snapshot) []string {
 	var out []string
 	for _, a := range s.ActivePhysicalAdapters() {

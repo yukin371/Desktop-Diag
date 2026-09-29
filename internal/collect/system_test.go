@@ -12,9 +12,8 @@ func TestNormalizeOSName(t *testing.T) {
 		want  string
 	}{
 		{
-			// 本机实测案例：Windows 11 (build 26200) 的注册表 ProductName
-			// 至今仍写作 "Windows 10 Pro for Workstations"。
-			// 照抄注册表会把用户的 Windows 11 报成 Windows 10。
+			// 本机实测：Windows 11 (build 26200) 的注册表 ProductName 仍是
+			// "Windows 10 Pro for Workstations"，照抄会把用户的 Windows 11 报成 Windows 10。
 			name:  "Windows 11 的注册表遗留写法必须被纠正",
 			in:    "Windows 10 Pro for Workstations",
 			build: 26200,
@@ -45,8 +44,7 @@ func TestNormalizeOSName(t *testing.T) {
 			want:  "Windows 10 Enterprise LTSC 2021",
 		},
 		{
-			// Server 的 ProductName 与客户端完全不同，绝不会以 "Windows 10" 开头。
-			// 这条用例是为了钉住"不要顺手把 Server 也改了"。
+			// Server 的 ProductName 绝不会以 "Windows 10" 开头；这条用例钉住"不要顺手把 Server 也改了"。
 			name:  "Windows Server 2025 不得被改写",
 			in:    "Windows Server 2025 Standard",
 			build: 26100,
@@ -77,7 +75,7 @@ func TestNormalizeOSName(t *testing.T) {
 			want:  "Windows 11 Pro",
 		},
 		{
-			// 只改写前缀。"Windows 10" 恰好是全文时应得到 "Windows 11"。
+			// 只改写前缀；"Windows 10" 恰好是全文时应得到 "Windows 11"。
 			name:  "只有 Windows 10 三个词时也能改写",
 			in:    "Windows 10",
 			build: 22000,
@@ -103,8 +101,7 @@ func TestFormatOSVersion(t *testing.T) {
 		{name: "本机实测值", major: 10, minor: 0, build: 26200, ubr: 9457, want: "10.0.26200.9457"},
 		{name: "无修订号时省略最后一段", major: 10, minor: 0, build: 19045, ubr: 0, want: "10.0.19045"},
 		{
-			// 读不到修订号不能写成 ".0"：那会让人以为修订号真的是 0，
-			// 而真实原因是我们没读到。
+			// 读不到修订号不能写成 ".0"：那会让人以为修订号真的是 0，而真实原因是我们没读到。
 			name: "ubr=0 不得写成 .0", major: 6, minor: 1, build: 7601, ubr: 0, want: "6.1.7601",
 		},
 	}

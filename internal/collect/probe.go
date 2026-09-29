@@ -23,17 +23,16 @@ func (probeCollector) EnvVar() string { return "probe" }
 
 // Collect 实现 Collector。
 //
-// 探测顺序固定为「网关 → 系统 DNS → 直连 DNS → 公网 TCP 443」，
-// 这条顺序本身就是诊断逻辑：从最内层往外逐段验证，
-// 因此任何一段的失败都能被后续结果区分成"这一段的问题"还是"更外层的问题"。
+// 探测顺序固定为「网关 → 系统 DNS → 直连 DNS → 公网 TCP 443」，这条顺序本身就是
+// 诊断逻辑：从最内层往外逐段验证，任何一段的失败都能被后续结果区分成"这一段的
+// 问题"还是"更外层的问题"。
 //
 // # 最要紧的一条纪律
 //
-// **探测"没能发起"与"发起了但没回应"必须严格区分。**
-// 前者说明是我们的工具或权限出了问题（属于诊断完整性），
-// 后者才是网络故障的证据。把前者记成后者，会让一台网络完好的机器
-// 被判成"内网链路中断"（SEVERE），运维据此去查交换机，白忙一场。
-// 本文件用 Skipped 标记表达前者。
+// **探测"没能发起"与"发起了但没回应"必须严格区分。** 前者说明是本工具或权限出了
+// 问题（属于诊断完整性），后者才是网络故障的证据。把前者记成后者，会让一台网络
+// 完好的机器被判成"内网链路中断"（SEVERE），运维据此去查交换机，白忙一场。
+// 本文件用 Skipped 标记表达前者：Skipped=true、Sent=0，同时记一条降级项。
 func (c probeCollector) Collect(ctx context.Context, snap *model.Snapshot) error {
 	active := snap.ActivePhysicalAdapters()
 	var probes []model.ProbeResult
@@ -73,8 +72,7 @@ func (c probeCollector) probeGateways(ctx context.Context, snap *model.Snapshot,
 	for _, a := range active {
 		gw := a.FirstGateway()
 		if gw == "" {
-			// 无网关由 R-02 表达，这里不产生探测记录，
-			// 免得报告里出现一条"探测目标为空"的噪声。
+			// 无网关由 R-02 表达，这里不产生探测记录，免得报告里出现"探测目标为空"的噪声。
 			continue
 		}
 		if ctx.Err() != nil {
@@ -107,8 +105,7 @@ func (c probeCollector) probeGateways(ctx context.Context, snap *model.Snapshot,
 
 // probeDNS 依次做系统 DNS 解析与直连 DNS 解析。
 //
-// 两次探测的**组合**才是判据：系统解析失败而直连成功，
-// 说明本机 DNS 服务/配置有问题而网络本身通（R-15）；
+// 两次探测的**组合**才是判据：系统失败而直连成功说明本机 DNS 有问题（R-15），
 // 两者都失败则是更外层的故障（R-16）。
 func (c probeCollector) probeDNS(ctx context.Context, snap *model.Snapshot) []model.ProbeResult {
 	var out []model.ProbeResult
@@ -149,10 +146,8 @@ func (c probeCollector) probeDNS(ctx context.Context, snap *model.Snapshot) []mo
 
 // probeTCP 依次尝试公网 TCP 443 目标，**首个成功即停止**。
 //
-// 为什么可以提前收手：这里要回答的问题只有一个——"公网 443 到底通不通"。
-// 只要有一个目标握手成功，答案就是"通"，再试其余目标不会改变任何结论，
-// 却会在网络正常时白白多花时间。反过来，全部失败时会把候选目标全部试完，
-// 报告因此能显示"三个候选目标都不可达"这一更强的证据。
+// 这里要回答的问题只有一个——"公网 443 到底通不通"：有一个目标握手成功就再试无益，
+// 全部失败时试完候选才能给出"三个候选目标都不可达"这一更强的证据。
 func (c probeCollector) probeTCP(ctx context.Context, snap *model.Snapshot) []model.ProbeResult {
 	var out []model.ProbeResult
 
@@ -183,8 +178,7 @@ func (c probeCollector) probeTCP(ctx context.Context, snap *model.Snapshot) []mo
 
 // skippedProbe 构造一条"没有真正发起"的探测记录。
 //
-// 关键在于 Sent 保持 0 且 Skipped 为 true：
-// 判定层据此把这条记录排除在丢包率与失败率统计之外。
+// Sent 保持 0 且 Skipped 为 true，判定层据此把这条排除在丢包率与失败率统计之外。
 func skippedProbe(kind model.ProbeKind, adapter, target, reason string) model.ProbeResult {
 	return model.ProbeResult{
 		Kind:        kind,

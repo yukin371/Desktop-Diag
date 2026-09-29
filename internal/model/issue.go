@@ -4,8 +4,7 @@ import "strings"
 
 // Severity 是告警等级。
 //
-// 取值刻意从 SevOK=0 起算，使「未告警」小于任何真实告警，
-// 排序时 Severity 降序即可让 SEVERE 排在最前。
+// 取值刻意从 SevOK=0 起算，使「未告警」小于任何真实告警，排序时降序即可让 SEVERE 排在最前。
 type Severity int
 
 const (
@@ -38,8 +37,8 @@ const (
 	CatMeta    Category = "诊断完整性"
 )
 
-// CategoryOrder 给出分类的固定展示顺序。
-// 顺序固定是 REQ-N-08「结论可复现」的一部分：同一份 Snapshot 必须渲染出完全相同的报告。
+// CategoryOrder 给出分类的固定展示顺序；顺序固定是 REQ-N-08「结论可复现」的一部分，
+// 同一份 Snapshot 必须渲染出完全相同的报告。
 func CategoryOrder(c Category) int {
 	switch c {
 	case CatNetwork:
@@ -57,7 +56,7 @@ func CategoryOrder(c Category) int {
 
 // Issue 是一条诊断结论（也就是报告第一层的一个条目）。
 type Issue struct {
-	RuleID     string // "R-01"
+	RuleID     string
 	Severity   Severity
 	Category   Category
 	Title      string   // 第一层单行标题
@@ -89,8 +88,7 @@ func HasSevere(issues []Issue) bool {
 	return false
 }
 
-// NormalizeEvidence 去掉证据行中的首尾空白并剔除空行，
-// 保证报告渲染时不会出现空的项目符号。
+// NormalizeEvidence 去掉证据行的首尾空白并剔除空行，避免渲染出空的项目符号。
 func NormalizeEvidence(evidence []string) []string {
 	out := make([]string, 0, len(evidence))
 	for _, e := range evidence {

@@ -7,16 +7,8 @@ import (
 	"unsafe"
 )
 
-// 本文件是「结构体布局纪律」的执行者（见 doc.go）。
-//
-// 期望值全部取自 Windows SDK 头文件在 **amd64** 下的实际布局：
-//   - iptypes.h  : IP_ADAPTER_ADDRESSES_LH / IP_ADAPTER_UNICAST_ADDRESS_LH /
-//                  IP_ADAPTER_DNS_SERVER_ADDRESS_XP / IP_ADAPTER_GATEWAY_ADDRESS_LH
-//   - ipexport.h : ICMP_ECHO_REPLY / IP_OPTION_INFORMATION
-//   - winsock2.h : SOCKET_ADDRESS / SOCKADDR / SOCKADDR_IN / SOCKADDR_IN6
-//
-// 任何一个数字对不上，都意味着 Go 侧布局与 MSVC 侧不一致，
-// 必须修复后再继续——否则读取的是错位的内存。
+// 本文件是「结构体布局纪律」的执行者（见 doc.go）：期望值取自 Windows SDK 在 amd64 下的实际布局。
+// 任何一个数字对不上，都意味着 Go 侧布局与 MSVC 侧不一致，读到的是错位的内存。
 
 func TestStructLayoutSizes(t *testing.T) {
 	tests := []struct {
@@ -68,8 +60,7 @@ func TestStructLayoutAlignments(t *testing.T) {
 	}
 }
 
-// ipAdapterAddressesLH 的逐字段偏移。
-// 这是本项目最关键的一张表：Next 指针错 8 字节，链表遍历就会崩溃。
+// ipAdapterAddressesLH 的逐字段偏移：Next 指针错 8 字节，链表遍历就会崩溃。
 func TestStructLayoutAdapterAddressesOffsets(t *testing.T) {
 	var a ipAdapterAddressesLH
 
@@ -112,9 +103,7 @@ func TestStructLayoutAdapterAddressesOffsets(t *testing.T) {
 		{"TunnelType", unsafe.Offsetof(a.TunnelType), 272},
 		{"Dhcpv6Server", unsafe.Offsetof(a.Dhcpv6Server), 280},
 		{"Dhcpv6ClientDuid", unsafe.Offsetof(a.Dhcpv6ClientDuid), 296},
-		// Dhcpv6ClientDuid[130] 结束于 296+130 = 426，而 ULONG 需 4 字节对齐，
-		// 故 MSVC 与 Go 都把 Dhcpv6ClientDuidLength 放在 428（426→428 补 2 字节）。
-		// 此值已用 MSVC + Windows SDK 10.0.26100.0 实测确认（见 tools/layout-probe/）。
+		// Dhcpv6ClientDuid[130] 结束于 426，ULONG 需 4 字节对齐，故 Dhcpv6ClientDuidLength 落在 428（MSVC 实测）。
 		{"Dhcpv6ClientDuidLength", unsafe.Offsetof(a.Dhcpv6ClientDuidLength), 428},
 		{"Dhcpv6Iaid", unsafe.Offsetof(a.Dhcpv6Iaid), 432},
 		{"FirstDnsSuffix", unsafe.Offsetof(a.FirstDnsSuffix), 440},
@@ -154,7 +143,7 @@ func TestStructLayoutUnicastAddressOffsets(t *testing.T) {
 }
 
 func TestStructLayoutAddressNodeOffsets(t *testing.T) {
-	// DNS / Gateway / WINS 三种地址节点布局完全一致
+	// DNS / Gateway / WINS 三种地址节点布局完全一致。
 	var d ipAdapterDnsServerAddressXP
 	if got, want := unsafe.Offsetof(d.Length), uintptr(0); got != want {
 		t.Errorf("DNS 节点 Length 偏移 = %d, 期望 %d", got, want)
@@ -233,8 +222,7 @@ func TestStructLayoutSocketAddressOffsets(t *testing.T) {
 	}
 }
 
-// 字段之间不得出现「重叠」或「未声明的额外间隙」——
-// 除了已知的对齐补齐点，偏移必须严格累加。
+// 字段之间不得出现「重叠」或「未声明的额外间隙」，除已知的对齐补齐点外偏移必须严格累加。
 func TestStructLayoutNoUnexpectedGaps(t *testing.T) {
 	var a ipAdapterAddressesLH
 
@@ -242,8 +230,7 @@ func TestStructLayoutNoUnexpectedGaps(t *testing.T) {
 	if got, want := unsafe.Offsetof(a.PhysicalAddress), uintptr(80); got != want {
 		t.Fatalf("前段字段出现意外间隙：PhysicalAddress 偏移 %d，期望 %d", got, want)
 	}
-	// PhysicalAddress[8] + PhysicalAddressLength(4) + Flags(4) + Mtu(4) + IfType(4)
-	// + OperStatus(4) + Ipv6IfIndex(4) = 88+32 = 120，此处开始 ZoneIndices(64) → 176 后接指针
+	// 88+32=120 起 ZoneIndices(64)，结束于 176，其后紧接 FirstPrefix 指针。
 	if got, want := unsafe.Offsetof(a.ZoneIndices)+unsafe.Sizeof(a.ZoneIndices), uintptr(176); got != want {
 		t.Fatalf("ZoneIndices 尾部偏移 = %d，期望 176（其后的 FirstPrefix 指针应紧邻）", got)
 	}
@@ -256,8 +243,7 @@ func TestStructLayoutNoUnexpectedGaps(t *testing.T) {
 	}
 }
 
-// Go 结构体的 sizeof 必须是其自身对齐的整数倍，
-// 否则数组化（[N]T）时元素之间会出现 SDK 没预期的额外补齐。
+// Go 结构体的 sizeof 必须是其自身对齐的整数倍，否则数组化时元素之间会出现 SDK 没预期的额外补齐。
 func TestStructLayoutSizeIsMultipleOfAlign(t *testing.T) {
 	check := func(name string, size, align uintptr) {
 		if align == 0 || size%align != 0 {

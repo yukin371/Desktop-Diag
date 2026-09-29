@@ -21,8 +21,8 @@ func TestDNSKind(t *testing.T) {
 	}
 }
 
-// TestDNSNonexistentDomainIsNotError 是最关键的一条：
-// `.invalid` 是 RFC 2606 保留的必然不存在顶级域，解析失败是**诊断结论**而非程序错误。
+// TestDNSNonexistentDomainIsNotError 是最关键的一条：`.invalid` 必然不存在，
+// 解析失败是**诊断结论**而非程序错误。
 func TestDNSNonexistentDomainIsNotError(t *testing.T) {
 	if testing.Short() {
 		t.Skip("短模式跳过（需要一次真实的解析失败往返）")
@@ -112,8 +112,7 @@ func TestDNSKindsAndResolvers(t *testing.T) {
 	}
 }
 
-// TestDNSDirectResolverTimeout 覆盖"解析超时"与"解析失败"的区分：
-// 192.0.2.0/24 是不可路由的保留网段，连上去只会超时。
+// TestDNSDirectResolverTimeout 覆盖"解析超时"与"解析失败"的区分：不可路由的保留网段只会超时。
 func TestDNSDirectResolverTimeout(t *testing.T) {
 	if testing.Short() {
 		t.Skip("短模式跳过（需要等待超时）")

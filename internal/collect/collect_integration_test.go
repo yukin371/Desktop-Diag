@@ -13,12 +13,10 @@ import (
 
 // TestIntegrationRunAllCollectors 在一台真实机器上跑完整条采集链。
 //
-// 这是本包唯一能证明"四个采集器真的能一起跑通"的测试：
-// 纯函数单测证明不了注册顺序、证明不了 winapi 与 model 的字段接得上、
-// 也证明不了任何一个采集器不会 panic。而这些恰恰是最容易出错的地方。
-//
-// 断言只针对**物理上必然成立**的性质（非负、不超过总量、字段非空），
-// 不做数值快照——同一份代码在 8 核台式机与 2 核虚拟机上结果本就不同。
+// 这是本包唯一能证明"四个采集器真的能一起跑通"的测试：纯函数单测证明不了注册顺序、
+// 证明不了 winapi 与 model 的字段接得上，也证明不了任何一个采集器不会 panic。
+// 断言只针对**物理上必然成立**的性质（非负、不超过总量、字段非空），不做数值快照——
+// 同一份代码在 8 核台式机与 2 核虚拟机上结果本就不同。
 func TestIntegrationRunAllCollectors(t *testing.T) {
 	if testing.Short() {
 		t.Skip("短模式跳过（会发起真实网络探测并等待 CPU 采样窗口）")
@@ -31,9 +29,7 @@ func TestIntegrationRunAllCollectors(t *testing.T) {
 
 	steps := Run(ctx, snap)
 
-	// ── 注册顺序 ────────────────────────────────────────────────
-	// 顺序不是审美问题：探测采集器依赖前三者的产出，判定引擎依赖
-	// Adapters 先于 Probes 就位。顺序错了，报告会给出错误的网卡归属。
+	// 顺序不是审美问题：探测采集器依赖前三者的产出，顺序错了报告会给出错误的网卡归属。
 	wantOrder := []string{"主机与系统信息", "网络适配器信息", "系统健康度", "网络连通性探测"}
 	if len(steps) != len(wantOrder) {
 		t.Fatalf("采集步骤数 = %d，期望 %d（注册列表被改动过？）", len(steps), len(wantOrder))
@@ -47,7 +43,6 @@ func TestIntegrationRunAllCollectors(t *testing.T) {
 		t.Logf("[%s] 耗时 %v  err=%v", s.Name, s.Duration.Round(time.Millisecond), s.Err)
 	}
 
-	// ── 主机与系统信息 ──────────────────────────────────────────
 	if snap.Host.ComputerName == "" {
 		t.Error("计算机名为空：报告头无法标识这是哪台机器")
 	}
@@ -68,7 +63,6 @@ func TestIntegrationRunAllCollectors(t *testing.T) {
 		snap.Host.ComputerName, snap.Host.OSName, snap.Host.OSVersion,
 		snap.Host.Uptime.Round(time.Second), snap.Host.IsAdmin)
 
-	// ── 网络适配器 ──────────────────────────────────────────────
 	if len(snap.Adapters) == 0 {
 		t.Error("一块网卡都没采到：GetAdaptersAddresses 的调用或解析有问题")
 	}
@@ -95,7 +89,6 @@ func TestIntegrationRunAllCollectors(t *testing.T) {
 		}
 	}
 
-	// ── 系统健康度 ──────────────────────────────────────────────
 	h := snap.Health
 	if !h.MemKnown {
 		t.Error("内存未能采集（GlobalMemoryStatusEx）")
@@ -135,7 +128,6 @@ func TestIntegrationRunAllCollectors(t *testing.T) {
 		h.MemUsedPercent, h.MemAvailBytes, h.MemTotalBytes,
 		h.SystemDrive, h.DiskFreeBytes, h.DiskTotalBytes, h.CPUPercent)
 
-	// ── 网络连通性 ──────────────────────────────────────────────
 	if len(snap.Probes) == 0 {
 		t.Fatal("一条探测记录都没有：探测采集器没有产出")
 	}
@@ -163,7 +155,6 @@ func TestIntegrationRunAllCollectors(t *testing.T) {
 		t.Errorf("层级结论缺少 level 或 summary：%+v", top)
 	}
 
-	// ── 第三层原始数据 ──────────────────────────────────────────
 	if len(snap.Raw) == 0 {
 		t.Error("原始数据附录为空：第三层将无内容可写")
 	}
@@ -178,8 +169,8 @@ func TestIntegrationRunAllCollectors(t *testing.T) {
 	}
 	t.Logf("原始数据 %d 行，分节统计 %v", len(snap.Raw), sections)
 
-	// 采集失败/降级项要打印出来。它们不会让测试失败（部分采集是合法结果），
-	// 但一条"因权限不足未采集"如果没人看见，就永远不会被修。
+	// 降级项要打印出来：它不会让测试失败（部分采集是合法结果），但一条"因权限不足
+	// 未采集"如果没人看见，就永远不会被修。
 	for _, f := range snap.Failures {
 		t.Logf("降级项 [%s] 部分采集=%v 原因=%s", f.Item, f.Partial, f.Reason)
 	}
@@ -187,8 +178,7 @@ func TestIntegrationRunAllCollectors(t *testing.T) {
 
 // TestIntegrationRunIsRepeatable 验证同一台机器上连跑两次的结论一致。
 //
-// REQ-N-08 要求结论可复现：运维拿两份报告对比时，如果同一台机器
-// 两次运行的"故障层级"不同，整份报告的可信度就没了。
+// REQ-N-08 要求结论可复现：同一台机器两次运行的"故障层级"不同，整份报告的可信度就没了。
 func TestIntegrationRunIsRepeatable(t *testing.T) {
 	if testing.Short() {
 		t.Skip("短模式跳过")

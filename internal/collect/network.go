@@ -36,15 +36,15 @@ func (c networkCollector) Collect(ctx context.Context, snap *model.Snapshot) err
 	for _, r := range raw {
 		a := convertAdapter(r)
 
-		// DNS 单独走一条兜底链，因为 GetAdaptersAddresses 在部分机器上
-		// 会对"确实配了 DNS"的网卡返回空列表（这正是基线场景 S-17）。
+		// DNS 单独走一条兜底链：GetAdaptersAddresses 在部分机器上会对"确实配了
+		// DNS"的网卡返回空列表（这正是基线场景 S-17）。
 		a.DNS, a.DNSSource = resolveDNS(r, snap)
 
 		adapters = append(adapters, a)
 	}
 
-	// 按接口索引排序：GetAdaptersAddresses 的返回顺序在不同机器/不同
-	// 运行时刻并不保证一致，而报告要求两次运行结果可比（REQ-N-08）。
+	// 按接口索引排序：GetAdaptersAddresses 的返回顺序在不同机器/不同运行时刻并不
+	// 保证一致，而报告要求两次运行结果可比（REQ-N-08）。
 	sort.SliceStable(adapters, func(i, j int) bool { return adapters[i].Index < adapters[j].Index })
 	snap.Adapters = adapters
 
@@ -57,8 +57,7 @@ func (c networkCollector) Collect(ctx context.Context, snap *model.Snapshot) err
 	}
 
 	if len(adapters) == 0 {
-		// 无网卡不是错误：这是一台需要被诊断的机器，不是采集失败。
-		// 记为部分采集，让报告说明"没有任何网络适配器"，判定层则保持静默。
+		// 无网卡不是采集失败，而是一台需要被诊断的机器：记部分采集，判定层则保持静默。
 		snap.AddFailure(c.Name(), c.EnvVar(), "系统未返回任何网络适配器", true)
 		return nil
 	}
@@ -82,10 +81,9 @@ func convertAdapter(r winapi.RawAdapter) model.Adapter {
 		Gateways:    dropBlanks(r.Gateways),
 	}
 
-	// AdminEnabled 恒为 true，这是刻意的：GetAdaptersAddresses 不暴露管理启用位，
-	// 「网卡被禁用」与「网线没插」在 IF_OPER_STATUS 上都可能是 Down。
-	// 本工具宁可只说"状态 Down"，也不猜"网卡已被禁用"——后者会让运维
-	// 直接去改一个可能本来就正确的配置。
+	// AdminEnabled 恒为 true 是刻意的：GetAdaptersAddresses 不暴露管理启用位，
+	// 「网卡被禁用」与「网线没插」在 IF_OPER_STATUS 上都可能是 Down。宁可只说
+	// "状态 Down"，也不猜"网卡已被禁用"——后者会让运维去改一个本就正确的配置。
 	a.AdminEnabled = true
 
 	a.IsVirtual, a.VirtualKind = detectVirtual(a.Name, a.Description, a.IfType)
@@ -111,11 +109,11 @@ func convertAdapter(r winapi.RawAdapter) model.Adapter {
 
 // resolveDNS 取得某块网卡的 DNS 服务器列表，并说明来源。
 //
-// 返回的 source 取值语义（**这三者必须区分清楚，否则 R-03 会误报**）：
+// 返回的 source 三者必须区分清楚，否则 R-03 会误报：
 //   - DNSSourceGetAdaptersAddresses：系统 API 直接给了 DNS，最可信。
-//   - DNSSourceRegistry：API 没给，但注册表里查过了——
-//     含"查了但确实没配"（合法为空，R-03 可以据此报警）。
-//   - DNSSourceMissing：**没读到**（拒绝访问等）。此时我们不知道有没有配，
+//   - DNSSourceRegistry：API 没给但注册表查过了，含"查了但确实没配"
+//     （合法为空，R-03 可以据此报警）。
+//   - DNSSourceMissing：**没读到**（拒绝访问等），我们不知道有没有配，
 //     R-03 必须保持沉默，改由 R-19 报告"诊断不完整"。
 func resolveDNS(r winapi.RawAdapter, snap *model.Snapshot) ([]string, string) {
 	if len(r.DNS) > 0 {
@@ -144,7 +142,7 @@ func resolveDNS(r winapi.RawAdapter, snap *model.Snapshot) ([]string, string) {
 		return nil, model.DNSSourceRegistry
 
 	default:
-		// 读不到 ≠ 没配置。必须记入诊断完整性，而不是报"DNS 未配置"。
+		// 读不到 ≠ 没配置：必须记入诊断完整性，而不是报"DNS 未配置"。
 		snap.AddFailure("网络适配器信息", "network",
 			fmt.Sprintf("网卡 %s 的 DNS 配置无法读取（可能因权限受限）: %v",
 				displayOr(r.FriendlyName, r.AdapterName), err), true)
@@ -233,16 +231,14 @@ func prefixToMask(prefix int) string {
 
 // detectVirtual 判断一块网卡是否为虚拟/隧道网卡，并给出种类。
 //
-// 为什么必须判断：一台装了 VMware 或 Hyper-V 的机器会有 4~8 块虚拟网卡，
-// 它们大多处于 Up 状态。若不排除，"网关探测"会去 ping VMware 的虚拟网关，
-// 得出的"网关不通"对用户毫无意义——真实网络其实是好的。
+// 必须判断：装了 VMware 或 Hyper-V 的机器会有 4~8 块处于 Up 状态的虚拟网卡，
+// 不排除的话"网关探测"会去 ping VMware 的虚拟网关，得出的"网关不通"毫无意义。
 func detectVirtual(name, description, ifType string) (bool, string) {
 	if ifType == model.IfTypeLoopback {
 		return true, model.VirtualLoopback
 	}
 
-	// 名称与描述都要看：厂商有时把标识放在描述里（"TAP-Windows Adapter V9"
-	// 的 FriendlyName 常被系统改写为"以太网 2"）。
+	// 名称与描述都要看：厂商有时把标识放在描述里（FriendlyName 常被系统改写）。
 	hay := strings.ToLower(name + " " + description)
 
 	switch {
@@ -260,16 +256,14 @@ func detectVirtual(name, description, ifType string) (bool, string) {
 		strings.Contains(hay, "hamachi"), strings.Contains(hay, "radmin"),
 		strings.Contains(hay, "softether"), strings.Contains(hay, "netbird"),
 		strings.Contains(hay, "neorouter"):
-		// 覆盖网络（overlay VPN）网卡。实测 ZeroTier 的网关是 25.255.255.254
-		// ——一个 IPv4 保留段里的合成地址。把它当真实网关去 ping，
-		// 只会得到"探测无法发起"或"100% 丢包"，后者足以让报告
-		// 误判成内网链路中断（R-14，SEVERE）。
+		// 覆盖网络（overlay VPN）。其网关是保留段里的合成地址（实测 ZeroTier 为
+		// 25.255.255.254）；当成真实网关去 ping 只会得到"探测无法发起"或 100% 丢包，
+		// 后者足以让报告误判成内网链路中断（R-14，SEVERE）。
 		return true, model.VirtualOverlay
 	case strings.Contains(hay, "loopback"), strings.Contains(hay, "km-test"):
 		return true, model.VirtualLoopback
 	case strings.Contains(hay, "wi-fi direct"), strings.Contains(hay, "wifi direct"):
-		// Wi-Fi Direct 虚拟适配器在无线网卡启用时也会是 Up，
-		// 但它没有任何真实网关，混进来同样会污染网关探测结论。
+		// Wi-Fi Direct 适配器在无线网卡启用时也是 Up，但没有真实网关，同样会污染网关探测。
 		return true, model.VirtualOther
 	}
 	return false, ""

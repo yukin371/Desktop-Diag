@@ -19,10 +19,8 @@ type Host struct {
 	BootTime     time.Time // StartedAt - Uptime，近似值
 }
 
-// ── IfType 取值 ──────────────────────────────────────────────
-//
-// 来自 IP_ADAPTER_ADDRESSES_LH.IfType（IANA ifType），此处只保留 MVP 关心的少数几类，
-// 其余统一落入 IfTypeOther，避免规则函数中出现裸字符串。
+// IfType 取值来自 IP_ADAPTER_ADDRESSES_LH.IfType（IANA ifType）；只保留 MVP 关心的少数几类，
+// 其余统一落入 IfTypeOther，避免规则函数里出现裸字符串。
 const (
 	IfTypeEthernet  = "Ethernet"  // IF_TYPE_ETHERNET_CSMACD (6)
 	IfTypeIEEE80211 = "IEEE80211" // IF_TYPE_IEEE80211 (71)
@@ -32,9 +30,7 @@ const (
 	IfTypeOther     = "Other"
 )
 
-// ── OperStatus 取值 ──────────────────────────────────────────
-//
-// 来自 IF_OPER_STATUS。IsActive 只认 OperStatusUp。
+// OperStatus 取值来自 IF_OPER_STATUS；IsActive 只认 OperStatusUp。
 const (
 	OperStatusUp             = "Up"
 	OperStatusDown           = "Down"
@@ -45,10 +41,8 @@ const (
 	OperStatusLowerLayerDown = "LowerLayerDown"
 )
 
-// ── 地址 Scope 取值 ─────────────────────────────────────────
-//
-// IPv4 也填 Scope：169.254.0.0/16 → LinkLocal，127.0.0.0/8 → Other，其余 → Global。
-// 但 IPv6OnlyLinkLocal 只读取 a.IPv6 的 Scope，因此两种协议族的语义不会互相污染。
+// Scope 取值；IPv4 也填 Scope：169.254.0.0/16 → LinkLocal，127.0.0.0/8 → Other，其余 → Global。
+// IPv6OnlyLinkLocal 只读 a.IPv6 的 Scope，两种协议族的语义不会互相污染。
 const (
 	ScopeGlobal    = "Global"
 	ScopeLinkLocal = "LinkLocal"
@@ -56,7 +50,6 @@ const (
 	ScopeOther     = "Other"
 )
 
-// ── 虚拟网卡类型 ─────────────────────────────────────────────
 const (
 	VirtualVMware     = "VMware"
 	VirtualHyperV     = "Hyper-V"
@@ -64,21 +57,17 @@ const (
 	VirtualTAP        = "TAP"
 	VirtualWireGuard  = "WireGuard"
 	VirtualLoopback   = "Loopback"
-	// VirtualOverlay 是覆盖网络（overlay VPN）网卡：ZeroTier、Tailscale、
-	// Hamachi、Radmin VPN、SoftEther、Netbird 之类。
+	// VirtualOverlay 是覆盖网络（ZeroTier、Tailscale、Hamachi、Radmin VPN 等）网卡。
 	//
-	// 为什么必须单独归类：这类网卡是 Up 状态的软件接口，并且**自带一个
-	// 合成网关地址**（实测 ZeroTier 为 25.255.255.254，属于 IPv4 保留段）。
-	// 那不是局域网网关，对它做 ICMP 探测只会得到"无法发起"或"100% 丢包"，
-	// 而后者会被误读成"内网链路中断"，把运维引向完全错误的方向。
+	// 必须单独归类：这类网卡是 Up 状态的软件接口，且自带一个合成网关地址
+	// （实测 ZeroTier 为 25.255.255.254，属 IPv4 保留段），对它做 ICMP 探测只会得到
+	// "100% 丢包"，进而被误读成"内网链路中断"。
 	VirtualOverlay = "Overlay"
 	VirtualOther   = "Other"
 )
 
-// ── DNS 来源 ─────────────────────────────────────────────────
-//
-// S-17 的关键：注册表 Tcpip 接口键不可读时，DNSSource 必须为 DNSSourceMissing，
-// 此时触发 R-19 而**不得**触发 R-03（否则会把"读不到"误报成"没配置"）。
+// DNSSource 取值。注册表 Tcpip 接口键不可读时必须是 DNSSourceMissing，此时触发 R-19
+// 而**不得**触发 R-03，否则会把"读不到"误报成"没配置"。
 const (
 	DNSSourceGetAdaptersAddresses = "GetAdaptersAddresses"
 	DNSSourceRegistry             = "Registry"
@@ -135,10 +124,8 @@ func (a Adapter) IsActive() bool {
 	return a.OperStatus == OperStatusUp
 }
 
-// HasUsableIPv4 报告该网卡上是否存在「可用于对外通信」的 IPv4 地址。
-//
-// 「可用」= 非 APIPA（169.254.x.x，DHCP 失败产物）且非回环。
-// 该定义使 R-01（APIPA）与 R-05（无有效 IPv4）不会互相矛盾。
+// HasUsableIPv4 报告该网卡上是否存在「可用于对外通信」的 IPv4 地址：
+// 非 APIPA（DHCP 失败产物）且非回环。该定义使 R-01 与 R-05 不会互相矛盾。
 func (a Adapter) HasUsableIPv4() bool {
 	for _, addr := range a.IPv4 {
 		if addr.IsAPIPA() || addr.IsLoopback() {
@@ -184,7 +171,7 @@ func (a Adapter) FirstGateway() string {
 	return ""
 }
 
-// AddrStrings 返回该网卡的 IPv4 地址纯文本列表（不含掩码），用于证据展示。
+// AddrStrings 返回该网卡的 IP 地址纯文本列表（不含掩码），用于证据展示。
 func (a Adapter) AddrStrings() []string {
 	out := make([]string, 0, len(a.IPv4)+len(a.IPv6))
 	for _, addr := range a.IPv4 {
@@ -196,11 +183,9 @@ func (a Adapter) AddrStrings() []string {
 	return out
 }
 
-// DisplayName 返回面向用户的网卡名称。
-//
-// 优先用 FriendlyName（用户在网络连接面板里看到的名字，如「以太网」），
-// 它为空时回落到硬件描述。两者都空时给一个明确的占位符而不是空串 ——
-// 报告里出现「网卡「」」会让用户无法判断是哪块网卡出了问题。
+// DisplayName 返回面向用户的网卡名称：优先 FriendlyName（网络连接面板里显示的名字），
+// 为空时回落到硬件描述；两者都空时给明确占位符而不是空串 —— 报告里出现「网卡「」」
+// 会让用户无法判断是哪块网卡出了问题。
 func (a Adapter) DisplayName() string {
 	if s := strings.TrimSpace(a.Name); s != "" {
 		return s

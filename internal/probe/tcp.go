@@ -23,12 +23,12 @@ type TCPOptions struct {
 
 // TCP 对 target（形如 "223.5.5.5:443"）发起一次 TCP 握手探测。
 //
-// 返回 error 的唯一情形是 target 为空或缺少端口。**连不通不是程序错误**：
-// 拒绝、超时、不可路由都是诊断结论，写进 ProbeResult（Success=false、Err=原因）
-// 后 error 仍为 nil。
+// 返回 error 的唯一情形是 target 为空或缺少端口。**连不通不是程序错误**：拒绝、
+// 超时、不可路由都是诊断结论，写进 ProbeResult（Success=false、Err=原因）后
+// error 仍为 nil。
 //
-// 走 net.Dialer 而非 HTTP 客户端：Go 的 net.Dial 天然不读取 WinINet/系统代理设置，
-// 因此这是真正的直连探测——若结果受系统代理影响，就无法区分"端口被封"与"代理异常"。
+// 走 net.Dialer 而非 HTTP 客户端：Go 的 net.Dial 不读取 WinINet/系统代理设置，
+// 因此这是真正的直连探测——结果若受代理影响，就无法区分"端口被封"与"代理异常"。
 func TCP(ctx context.Context, target string, opts TCPOptions) (model.ProbeResult, error) {
 	if target == "" {
 		return model.ProbeResult{}, errors.New("TCP 探测：目标地址为空")
@@ -38,9 +38,8 @@ func TCP(ctx context.Context, target string, opts TCPOptions) (model.ProbeResult
 	if err != nil {
 		return model.ProbeResult{}, fmt.Errorf("TCP 探测：目标 %q 不是合法的 主机:端口 形式: %w", target, err)
 	}
-	// 主机为空（":443"）无法拨号；端口非数字（"127.0.0.1:abc"）在 Dial 阶段
-	// 只会得到一个含义模糊的查找错误。两种情况都在这里提前拒绝，
-	// 让调用方能立刻发现是目标字符串写错了，而不是"目标连不通"。
+	// 主机为空（":443"）无法拨号；端口非数字（"127.0.0.1:abc"）只会得到一个含义
+	// 模糊的查找错误。两种情况都在这里提前拒绝，让调用方立刻看出是目标字符串写错了。
 	if host == "" {
 		return model.ProbeResult{}, fmt.Errorf("TCP 探测：目标 %q 缺少主机地址", target)
 	}
@@ -80,8 +79,8 @@ func TCP(ctx context.Context, target string, opts TCPOptions) (model.ProbeResult
 	return result, nil
 }
 
-// isTimeoutErr 判断错误链中是否存在实现了 Timeout() 的超时错误。
-// net.OpError 的超时来自 Dialer.Timeout，不一定会包装 context.DeadlineExceeded。
+// isTimeoutErr 判断错误链中是否有超时错误：net.OpError 的超时来自 Dialer.Timeout，
+// 不一定会包装 context.DeadlineExceeded。
 func isTimeoutErr(err error) bool {
 	var t interface{ Timeout() bool }
 	return errors.As(err, &t) && t.Timeout()

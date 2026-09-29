@@ -5,13 +5,22 @@
 *.out
 
 # ── 覆盖率产物 ────────────────────────────────────────────
+# 注意：必须同时忽略裸名 coverage —— `go test -coverprofile=coverage` 会生成
+# 无后缀文件，曾因此被 `git add -A` 误提交进仓库。
+/coverage
 coverage.out
 coverage.html
 coverage.txt
+cov.out
 /coverage-*
 
 # ── 临时验证程序（阶段 3 结构体布局验证用，不进入交付物）──
 /tmpverify/
+
+# ── 真机取证用的临时工作目录（实验程序、残留报告、临时构建产物）──
+/.probe/
+/.gotmp/
+/e2eout/
 
 # ── 结构体布局取证工具的生成物（tools/layout-probe/run.ps1 可随时重建）──
 /tools/layout-probe/bin/

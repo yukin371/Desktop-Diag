@@ -6,13 +6,8 @@ import (
 	"unsafe"
 )
 
-// 本文件封装控制台相关的只读查询与**仅影响本进程控制台显示**的设置。
-//
-// 关于红线 C-01 的边界：SetConsoleOutputCP / SetConsoleMode 修改的是
-// 当前进程所附加控制台的代码页与模式。它们不写入磁盘、不改注册表、
-// 不改系统配置，进程退出即随控制台属性失效，且仅在检测到标准输出
-// 确实是控制台时才会调用（输出被重定向时完全不动）。这是"让中文正确显示"
-// 所必需的最小写操作，已在阶段 0 基线的写入白名单中登记。
+// 本文件封装控制台查询，以及仅影响本进程控制台的代码页与模式设置。
+// 后者不写磁盘、不改注册表、进程退出即失效，是让中文正确显示所需的最小写操作（已登记在写入白名单中）。
 
 var (
 	procGetConsoleMode     = kernel32.NewProc("GetConsoleMode")
@@ -24,21 +19,15 @@ var (
 
 // 控制台代码页与模式常量。
 const (
-	// CPUTF8 是 UTF-8 代码页。Windows 控制台默认使用 OEM 代码页
-	// （简体中文系统上是 936/GBK），不切换的话写出的 UTF-8 字节会被按 GBK
-	// 解释成乱码。
+	// CPUTF8 是 UTF-8 代码页；不切换则写出的 UTF-8 字节会被按 OEM 代码页（简体中文为 GBK）解释成乱码。
 	CPUTF8 = 65001
 
-	// EnableVirtualTerminalProcessing 让控制台把 ANSI 转义序列当作指令而非
-	// 普通字符。没有它，"\x1b[31m" 会原样打印出来。
+	// enableVirtualTerminalProcessing 让控制台把 ANSI 转义序列当作指令而非普通字符。
 	enableVirtualTerminalProcessing = 0x0004
 	enableProcessedOutput           = 0x0001
 )
 
-// GetConsoleMode 返回控制台句柄的当前模式。句柄不是控制台时返回错误。
-//
-// 这也是判断"标准输出是否真的连到控制台"的标准手段：
-// 输出被重定向到文件或管道时，这里会失败。
+// GetConsoleMode 返回控制台句柄的当前模式；句柄不是控制台（输出被重定向）时返回错误。
 func GetConsoleMode(handle uintptr) (uint32, error) {
 	var mode uint32
 	r, _, err := procGetConsoleMode.Call(handle, uintptr(unsafe.Pointer(&mode)))
@@ -87,11 +76,8 @@ func SetConsoleCP(cp uint32) error {
 	return nil
 }
 
-// EnableVTProcessing 尝试为句柄打开 ANSI 转义序列支持。
-//
-// 返回是否成功。失败**不是**错误路径：在 Windows 10 1511 之前的系统、
-// 或某些受限环境下无法开启，此时调用方应降级为无颜色的纯文本输出
-// （见 ui 包的三级降级矩阵），而不是中断诊断。
+// EnableVTProcessing 尝试为句柄打开 ANSI 转义序列支持，返回是否成功。
+// 返回 false **不是**错误路径：老系统或受限环境无法开启，调用方应降级为无颜色的纯文本输出。
 func EnableVTProcessing(handle uintptr) bool {
 	mode, err := GetConsoleMode(handle)
 	if err != nil {

@@ -19,11 +19,8 @@ import (
 
 // win11FirstBuild 是 Windows 11 的首个内部版本号。
 //
-// 存在的唯一理由是修掉一个**真实存在**的注册表遗留行为：
-// Windows 11 的 HKLM\...\CurrentVersion\ProductName 仍然写作
-// "Windows 10 Pro for Workstations"（本机 build 26200 实测如此）。
-// 若照抄注册表，报告会把用户的 Windows 11 写成 Windows 10，
-// 而这份报告是要拿去跟运维对话的证据。
+// Windows 11 的注册表 ProductName 至今仍写作 "Windows 10 ..."（本机 build 26200 实测），
+// 照抄注册表会把用户的 Windows 11 报成 Windows 10，而报告是要拿去跟运维对话的证据。
 const win11FirstBuild = 22000
 
 // systemCollector 采集主机与操作系统信息。
@@ -37,15 +34,13 @@ func (systemCollector) EnvVar() string { return "system" }
 
 // Collect 实现 Collector。
 //
-// 采集策略：**逐项尽力而为**。任何单项失败都只降级该项（记为部分采集），
-// 不放弃整台机器的诊断——一台读不到注册表的机器，它的网卡和磁盘数据
-// 对运维一样有价值。
+// 逐项尽力而为：任何单项失败都只降级该项，不放弃整台机器的诊断——一台读不到
+// 注册表的机器，它的网卡和磁盘数据对运维一样有价值。
 func (c systemCollector) Collect(ctx context.Context, snap *model.Snapshot) error {
 	var partial []string
 
 	host := &snap.Host
 
-	// —— 计算机名 ——
 	if name, err := winapi.GetComputerNameEx(winapi.ComputerNameDNSHostname); err != nil {
 		partial = append(partial, "计算机名: "+err.Error())
 	} else {
@@ -53,7 +48,6 @@ func (c systemCollector) Collect(ctx context.Context, snap *model.Snapshot) erro
 		snap.AddRaw("主机与系统", "GetComputerNameExW(ComputerNameDnsHostname)", name)
 	}
 
-	// —— 运行账户 ——
 	if u, err := user.Current(); err != nil {
 		partial = append(partial, "运行账户: "+err.Error())
 	} else {
@@ -61,12 +55,10 @@ func (c systemCollector) Collect(ctx context.Context, snap *model.Snapshot) erro
 		snap.AddRaw("主机与系统", "os/user.Current()", u.Username)
 	}
 
-	// —— 管理员权限 ——
 	// 只判断，不提升：本工具免管理员运行是硬性需求（REQ-F-705）。
 	host.IsAdmin = winapi.IsElevated()
 	snap.AddRaw("主机与系统", "Token.IsElevated", fmt.Sprintf("IsAdmin=%v", host.IsAdmin))
 
-	// —— 操作系统版本号 ——
 	// 用 RtlGetVersion 而不是 GetVersionEx：后者在未声明兼容性的清单下会谎报版本。
 	if v, err := winapi.RtlGetVersion(); err != nil {
 		partial = append(partial, "操作系统版本: "+err.Error())
@@ -77,7 +69,6 @@ func (c systemCollector) Collect(ctx context.Context, snap *model.Snapshot) erro
 				v.MajorVersion, v.MinorVersion, v.BuildNumber, v.PlatformID))
 		host.OSVersion = formatOSVersion(v.MajorVersion, v.MinorVersion, v.BuildNumber, 0)
 
-		// —— 操作系统显示名 ——
 		// 磁盘/内存的结论不依赖它，但它是报告头的第一行，值得单独读注册表。
 		productName, ubr, regErr := readOSRegistry(snap)
 		if regErr != nil {
@@ -88,17 +79,14 @@ func (c systemCollector) Collect(ctx context.Context, snap *model.Snapshot) erro
 		}
 	}
 
-	// —— 处理器架构 ——
 	host.OSArch = archDisplay(runtime.GOARCH)
 	snap.AddRaw("主机与系统", "runtime.GOARCH", runtime.GOARCH)
 
-	// —— 运行时长 ——
 	if ms, err := winapi.GetTickCount64(); err != nil {
 		partial = append(partial, "系统运行时长: "+err.Error())
 	} else {
-		// 注意 GetTickCount64 的语义是"系统已运行毫秒数"，不含休眠时间。
-		// 因此由它反推的开机时刻在发生过休眠的机器上会偏晚——
-		// 这是可接受的：本工具用它表达"运行了多久"，不作为开机时刻的证据。
+		// GetTickCount64 的语义是"系统已运行毫秒数"，不含休眠时间，因此反推的开机
+		// 时刻在休眠过的机器上会偏晚；该值只用于表达"运行了多久"，不作为开机时刻的证据。
 		host.Uptime = time.Duration(ms) * time.Millisecond
 		host.BootTime = snap.StartedAt.Add(-host.Uptime)
 		snap.AddRaw("主机与系统", "kernel32!GetTickCount64",
@@ -117,8 +105,7 @@ func (c systemCollector) Collect(ctx context.Context, snap *model.Snapshot) erro
 
 // readOSRegistry 读取操作系统显示名与修订号（UBR）。
 //
-// 分两次读而不是一次 RegReadFirstString：ProductName 与 UBR 是两个独立的值，
-// 任一缺失都不应让另一个也拿不到。
+// 两个值分别读：任一缺失都不应让另一个也拿不到。
 func readOSRegistry(snap *model.Snapshot) (productName string, ubr uint32, err error) {
 	var problems []string
 
@@ -152,14 +139,8 @@ func readOSRegistry(snap *model.Snapshot) (productName string, ubr uint32, err e
 
 // normalizeOSName 把注册表里的 ProductName 纠正为可对外陈述的系统名。
 //
-// 纯函数，便于单测——本机实测案例：
-//
-//	normalizeOSName("Windows 10 Pro for Workstations", 26200)
-//	→ "Windows 11 Pro for Workstations"
-//
-// 只改写以 "Windows 10" 开头且 build >= 22000 的名称：
-// Windows Server 系列（build 20348/26100 等）的 ProductName 是
-// "Windows Server 2022/2025"，绝不能被误改成客户端系统名。
+// 只改写以 "Windows 10" 开头且 build >= 22000 的名称：Windows Server 系列
+// （ProductName 是 "Windows Server 2022/2025"）绝不能被误改成客户端系统名。
 func normalizeOSName(productName string, buildNumber uint32) string {
 	name := strings.TrimSpace(productName)
 	if name == "" {

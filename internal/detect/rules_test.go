@@ -9,8 +9,6 @@ import (
 	"github.com/yukin371/desktop-diag/internal/model"
 )
 
-// ── 构造辅助 ──────────────────────────────────────────────────
-
 // upAdapter 造一块「已连接的非虚拟以太网卡」，即进入判定范围的基准对象。
 func upAdapter(name string) model.Adapter {
 	return model.Adapter{
@@ -102,8 +100,6 @@ func run(t *testing.T, id string, s *model.Snapshot) []model.Issue {
 	return nil
 }
 
-// ── 注册表元测试 ──────────────────────────────────────────────
-
 // TestCatalogMetadata 是阶段 6 文档生成的正确性前提：
 // 缺 ID、缺标题或重复 ID 都会让自动生成的规则表出现空洞。
 func TestCatalogMetadata(t *testing.T) {
@@ -138,7 +134,6 @@ func TestCatalogMetadata(t *testing.T) {
 	}
 }
 
-// TestCatalogIsCopy 保证调用方改不动求值行为。
 func TestCatalogIsCopy(t *testing.T) {
 	cat := Catalog()
 	cat[0].ID = "R-99"
@@ -146,8 +141,6 @@ func TestCatalogIsCopy(t *testing.T) {
 		t.Error("Catalog() 返回的必须是副本，否则文档生成器能改掉判定行为")
 	}
 }
-
-// ── R-01 ~ R-05 ───────────────────────────────────────────────
 
 func TestRuleR01APIPA(t *testing.T) {
 	a := upAdapter("以太网")
@@ -164,7 +157,6 @@ func TestRuleR01APIPA(t *testing.T) {
 		t.Errorf("正常地址与 APIPA 并存时仍应触发 R-01，实际 %d 条", len(got))
 	}
 
-	// 纯正常地址：不得触发。
 	a3 := upAdapter("以太网")
 	a3.IPv4 = []model.Addr{{IP: "192.168.1.10"}}
 	if got := run(t, "R-01", snap(a3)); len(got) != 0 {
@@ -193,16 +185,14 @@ func TestRuleR02NoGateway(t *testing.T) {
 		t.Errorf("有网关不应触发 R-02，实际 %d 条", len(got))
 	}
 
-	// 网关列表里只有空白串，等同未配置。
 	a.Gateways = []string{"  "}
 	if got := run(t, "R-02", snap(a)); len(got) != 1 {
 		t.Errorf("网关为空白串应视为未配置并触发 R-02，实际 %d 条", len(got))
 	}
 }
 
-// TestRuleR03NoDNS 同时钉住基线场景 S-17：
-// DNS 来源为「未采集」时**绝不能**报「DNS 未配置」，
-// 否则会让用户去改一个本来正确的设置。
+// TestRuleR03NoDNS 同时钉住基线场景 S-17：DNS 来源为「未采集」时绝不能报
+// 「DNS 未配置」，否则会让用户去改一个本来正确的设置。
 func TestRuleR03NoDNS(t *testing.T) {
 	a := upAdapter("以太网")
 	a.Gateways = []string{"192.168.1.1"}
@@ -210,7 +200,6 @@ func TestRuleR03NoDNS(t *testing.T) {
 		t.Fatalf("空 DNS 应触发 R-03，实际 %d 条", len(got))
 	}
 
-	// S-17：未采集 ≠ 未配置。
 	a.DNSSource = model.DNSSourceMissing
 	if got := run(t, "R-03", snap(a)); len(got) != 0 {
 		t.Errorf("DNS 来源为「未采集」时不得触发 R-03（场景 S-17），实际 %d 条", len(got))
@@ -256,21 +245,17 @@ func TestRuleR05IPv6OnlyLinkLocal(t *testing.T) {
 		t.Fatalf("仅链路本地 IPv6 应触发 R-05，实际 %d 条", len(got))
 	}
 
-	// 有可用 IPv4：不再报。
 	a.IPv4 = []model.Addr{{IP: "192.168.1.10"}}
 	if got := run(t, "R-05", snap(a)); len(got) != 0 {
 		t.Errorf("有可用 IPv4 时不应触发 R-05，实际 %d 条", len(got))
 	}
 
-	// 只有全局 IPv6：可对外通信，不报。
 	b := upAdapter("以太网")
 	b.IPv6 = []model.Addr{{IP: "2408:8207::1", Scope: model.ScopeGlobal}}
 	if got := run(t, "R-05", snap(b)); len(got) != 0 {
 		t.Errorf("有全局 IPv6 时不应触发 R-05，实际 %d 条", len(got))
 	}
 }
-
-// ── R-06 ~ R-11 ───────────────────────────────────────────────
 
 func TestRuleMemoryTiers(t *testing.T) {
 	tests := []struct {
@@ -367,16 +352,12 @@ func TestRuleDiskTiers(t *testing.T) {
 	}
 }
 
-// ── R-12 ~ R-18 ───────────────────────────────────────────────
-
 func TestRuleR12GatewayLoss(t *testing.T) {
-	// 4 发 3 收 = 25% 丢包，越过 20% 阈值。
 	s := withProbes(snap(), gwProbe("以太网", "192.168.1.1", 4, 3, 5))
 	if got := run(t, "R-12", s); len(got) != 1 {
 		t.Errorf("25%% 丢包应触发 R-12，实际 %d 条", len(got))
 	}
 
-	// 4 发 4 收 = 0% 丢包。
 	s = withProbes(snap(), gwProbe("以太网", "192.168.1.1", 4, 4, 5))
 	if got := run(t, "R-12", s); len(got) != 0 {
 		t.Errorf("无丢包不应触发 R-12，实际 %d 条", len(got))
@@ -409,8 +390,7 @@ func TestRuleR13GatewayLatency(t *testing.T) {
 		t.Errorf("149.9ms 不应触发 R-13，实际 %d 条", len(got))
 	}
 
-	// 全部无回包时 AvgRTT 为 0，不得因为"0 < 150"之外的原因触发，
-	// 也不得因为拿纳秒比毫秒而误报。
+	// 无回包时 AvgRTT 为 0，不得因单位换算（纳秒比毫秒）而误报。
 	s = withProbes(snap(), gwProbe("以太网", "192.168.1.1", 4, 0, 0))
 	if got := run(t, "R-13", s); len(got) != 0 {
 		t.Errorf("无回包不应触发 R-13，实际 %d 条", len(got))
@@ -418,10 +398,8 @@ func TestRuleR13GatewayLatency(t *testing.T) {
 }
 
 // TestRuleR14R18MutualExclusion 钉住本次设计中最重要的一处判断：
-//
-// 「网关 ping 不通但公网 443 可达」几乎总是 ICMP 被安全设备拦截，**不是断网**。
-// 若此时同时报 R-14（严重：内网链路中断）与 R-18（警告：疑似 ICMP 被拦截），
-// 报告会自相矛盾，并把一次"ping 被墙了"误导成严重故障。
+// 「网关 ping 不通但公网 443 可达」几乎总是 ICMP 被安全设备拦截，**不是断网**；
+// 此时若同时报 R-14 与 R-18，报告会自相矛盾，并把"ping 被墙了"误导成严重故障。
 func TestRuleR14R18MutualExclusion(t *testing.T) {
 	s := withProbes(snap(),
 		gwProbe("以太网", "192.168.1.1", 4, 0, 0),
@@ -434,7 +412,6 @@ func TestRuleR14R18MutualExclusion(t *testing.T) {
 		t.Errorf("公网可达时应报 R-18，实际 %d 条", len(got))
 	}
 
-	// 网关不通且公网也不通 → 才是真的内网中断。
 	s = withProbes(snap(),
 		gwProbe("以太网", "192.168.1.1", 4, 0, 0),
 		tcpProbe("223.5.5.5:443", false),
@@ -460,7 +437,6 @@ func TestRuleR15LocalDNSBroken(t *testing.T) {
 		t.Errorf("直连成功时不应触发 R-16，实际 %d 条", len(got))
 	}
 
-	// 两者都成功：都不报。
 	s = withProbes(snap(),
 		dnsProbe(model.ProbeDNSSystem, true),
 		dnsProbe(model.ProbeDNSDirect, true),
@@ -496,7 +472,6 @@ func TestRuleR16DNSAllBroken(t *testing.T) {
 }
 
 func TestRuleR17WANPortBlocked(t *testing.T) {
-	// 网关可达 + 443 全灭 → 内网正常、外网端口受限。
 	s := withProbes(snap(),
 		gwProbe("以太网", "192.168.1.1", 4, 4, 5),
 		tcpProbe("223.5.5.5:443", false),
@@ -506,7 +481,6 @@ func TestRuleR17WANPortBlocked(t *testing.T) {
 		t.Errorf("网关可达且 443 全灭应触发 R-17，实际 %d 条", len(got))
 	}
 
-	// 任一 443 成功即认为出口正常。
 	s = withProbes(snap(),
 		gwProbe("以太网", "192.168.1.1", 4, 4, 5),
 		tcpProbe("223.5.5.5:443", false),
@@ -525,19 +499,15 @@ func TestRuleR17WANPortBlocked(t *testing.T) {
 		t.Errorf("网关不通时不应触发 R-17（应由 R-14 表达），实际 %d 条", len(got))
 	}
 
-	// 无可探测网关（无网关配置）时 443 全灭仍应报 R-17。
 	s = withProbes(snap(), tcpProbe("223.5.5.5:443", false))
 	if got := run(t, "R-17", s); len(got) != 1 {
 		t.Errorf("无网关且 443 全灭应触发 R-17，实际 %d 条", len(got))
 	}
 
-	// 一个 443 都没执行：不得报。
 	if got := run(t, "R-17", snap()); len(got) != 0 {
 		t.Errorf("未执行 443 探测时不应触发 R-17，实际 %d 条", len(got))
 	}
 }
-
-// ── R-19 ─────────────────────────────────────────────────────
 
 func TestRuleR19PartialData(t *testing.T) {
 	s := snap()
@@ -561,8 +531,6 @@ func TestRuleR19PartialData(t *testing.T) {
 		t.Errorf("部分采集的项应被标注，实际 %q", got[0].Evidence[1])
 	}
 }
-
-// ── 引擎行为 ──────────────────────────────────────────────────
 
 // TestEvaluateSortOrder 钉住报告第一层的行序：
 // 等级降序 → 分类固定序 → 规则 ID 升序，且多次运行完全一致。
@@ -589,7 +557,6 @@ func TestEvaluateSortOrder(t *testing.T) {
 		t.Fatalf("排序结果 = %v，期望 %v（严重在前，同类内按分类固定序再按 ID）", ids, want)
 	}
 
-	// 可复现性：连跑 5 次结果必须完全一致。
 	for n := 0; n < 5; n++ {
 		again := Evaluate(s)
 		var ids2 []string
@@ -608,9 +575,8 @@ func TestEvaluateNilSnapshot(t *testing.T) {
 	}
 }
 
-// TestEvaluateRecoversPanic 验证单条规则崩溃不会带走整份报告。
-//
-// 采集通常要跑十几秒，用户不能因为一条规则的实现缺陷就拿到崩溃而不是报告。
+// TestEvaluateRecoversPanic 验证单条规则崩溃不会带走整份报告：采集通常要跑十几秒，
+// 用户不能因为一条规则的实现缺陷就拿到崩溃而不是报告。
 func TestEvaluateRecoversPanic(t *testing.T) {
 	boom := ruleEntry{
 		ID: "R-99", Severity: model.SevWarning, Category: model.CatMeta,
@@ -639,7 +605,6 @@ func TestEvaluateRecoversPanic(t *testing.T) {
 	s := snap()
 	got := Evaluate(s)
 
-	// 不该有 R-99 的告警，但必须留下一条采集失败记录，于是 R-19 会把它带进报告。
 	for _, i := range got {
 		if i.RuleID == "R-99" {
 			t.Fatalf("崩溃的规则不应产出告警，实际 %+v", i)
@@ -663,8 +628,7 @@ func TestEvaluateRecoversPanic(t *testing.T) {
 }
 
 // TestEvaluateRealisticHealthyMachine 用一台配置齐全的健康机器验证「零告警」。
-//
-// 这是防误报的关键用例：把阈值调到会误报的水平，运维人员就会开始忽略报告。
+// 这是防误报的关键用例：阈值调到会误报的水平，运维人员就会开始忽略报告。
 func TestEvaluateRealisticHealthyMachine(t *testing.T) {
 	a := upAdapter("以太网")
 	a.IPv4 = []model.Addr{{IP: "192.168.1.10", Prefix: 24}}

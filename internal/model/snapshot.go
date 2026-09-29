@@ -1,10 +1,8 @@
 // Package model 定义 Desktop-Diag 的领域数据结构。
 //
-// 本包是**叶子包**：不 import 任何其他 internal 包，也不做任何 IO 或系统调用。
-// 它只承载数据与作用于数据的纯函数，因此可以脱离真机在任意平台单测。
-//
-// 设计要点：全部为值语义的普通结构体，无指针网状引用、无接口，
-// 保证可比较、可序列化、可做 golden 测试。
+// 本包是叶子包：不 import 任何其他 internal 包，也不做 IO 或系统调用，
+// 只承载数据与作用于数据的纯函数，因此可以脱离真机在任意平台单测。
+// 全部为值语义的普通结构体，无指针网状引用、无接口，可比较、可序列化。
 package model
 
 import "time"
@@ -21,10 +19,8 @@ type Snapshot struct {
 	Raw       []RawLine         // 第三层附录原始数据
 }
 
-// CollectFailure 记录一个采集项的失败或部分失败。
-//
-// 任何一条 CollectFailure 都会触发 R-19「诊断不完整」，
-// 这是「非管理员运行不得静默缺数据」这一核心价值的落地点。
+// CollectFailure 记录一个采集项的失败或部分失败；任何一条都会触发 R-19，
+// 这是「非管理员运行不得静默缺数据」的落地点。
 type CollectFailure struct {
 	Item    string // 人类可读的采集项名，如 "网卡信息"
 	EnvVar  string // 内部标识，如 "network"
@@ -32,24 +28,18 @@ type CollectFailure struct {
 	Partial bool   // 是否部分成功（如 3 块网卡中 1 块读取失败）
 }
 
-// RawLine 是报告第三层「原始数据附录」的一行。
-//
-// 保留原始数据的目的：当自动判定结论与运维人员经验冲突时，
-// 可以直接看原始键值对，而不是二次运行工具。
+// RawLine 是报告第三层「原始数据附录」的一行；保留原始数据是为了结论与运维
+// 经验冲突时可直接核对，而不必二次运行工具。
 type RawLine struct {
 	Section string // 分节标题
 	Source  string // 数据来源，如 "GetAdaptersAddresses" / "HKLM\\...\\Interfaces"
 	Line    string // 原始键值对
 }
 
-// ActivePhysicalAdapters 返回「真实、已启用、正在工作」的物理网卡。
+// ActivePhysicalAdapters 返回「真实、已启用、正在工作」的物理网卡，
+// 是 R-01 / R-02 / R-03 与连通性探测归属判定的共同输入。
 //
-// 过滤条件（三者同时满足）：
-//  1. OperStatus == "Up"      —— 链路已建立，排除 Down / NotPresent / Dormant
-//  2. !IsVirtual              —— 排除 VMware / Hyper-V / VirtualBox / TAP / WireGuard / Loopback
-//  3. IfType != "Loopback"    —— 对虚拟标记误判的兜底防御
-//
-// 该方法是 R-01 / R-02 / R-03 的输入，也是连通性探测的归属判定依据。
+// IfType != Loopback 那一条是对虚拟标记漏判的兜底防御，三者缺一不可。
 func (s *Snapshot) ActivePhysicalAdapters() []Adapter {
 	var out []Adapter
 	for _, a := range s.Adapters {
@@ -67,15 +57,9 @@ func (s *Snapshot) ActivePhysicalAdapters() []Adapter {
 	return out
 }
 
-// IPv6OnlyLinkLocal 判定 R-05 的触发条件：
-// 「仅有 IPv6 链路本地地址（fe80::/10）且无全局 IPv6 地址，同时无有效 IPv4」。
+// IPv6OnlyLinkLocal 判定 R-05 的触发条件：仅有 IPv6 链路本地地址、无全局 IPv6，且无有效 IPv4。
 //
-// 语义精确定义：
-//   - 没有活动物理网卡            → false（那是 S-01 无网卡场景，由 R-19 处理）
-//   - 任一活动物理网卡上有非链路本地 IPv6 → false（存在可路由 IPv6）
-//   - 任一活动物理网卡上有有效 IPv4      → false（存在有效 IPv4）
-//   - 否则必须至少存在一个链路本地 IPv6  → true
-//
+// 无活动物理网卡时返回 false —— 那是无网卡场景，由 R-19 处理。
 // 只读取 a.IPv6 的 Scope，因此与 IPv4 的 APIPA 判定（R-01）互不干扰。
 func (s *Snapshot) IPv6OnlyLinkLocal() bool {
 	adapters := s.ActivePhysicalAdapters()

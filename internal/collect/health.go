@@ -26,8 +26,7 @@ func (healthCollector) EnvVar() string { return "health" }
 
 // Collect 实现 Collector。
 //
-// 三项指标相互独立，任何一项失败都不影响另外两项的输出——
-// 内存能读而磁盘读不到的机器，其内存结论依然有价值。
+// 三项指标相互独立，任何一项失败都不影响另外两项的输出。
 func (c healthCollector) Collect(ctx context.Context, snap *model.Snapshot) error {
 	var partial []string
 
@@ -72,9 +71,8 @@ func collectMemory(snap *model.Snapshot) error {
 
 // collectDisk 采集**系统盘**的容量与可用空间。
 //
-// 系统盘由系统自己给出（GetWindowsDirectoryW），不是硬编码 "C:"。
-// 基线缺陷 B5 明确指出：在系统盘非 C 的机器上，硬编码会得出完全相反的结论
-// （例如实际系统盘只剩 2 GiB，却去报告一块空闲的数据盘）。
+// 系统盘由 GetWindowsDirectoryW 给出而不是硬编码 "C:"：在系统盘非 C 的机器上
+// 硬编码会得出完全相反的结论（基线缺陷 B5）。
 func collectDisk(snap *model.Snapshot) error {
 	winDir, err := winapi.GetWindowsDirectory()
 	if err != nil {
@@ -105,13 +103,9 @@ func collectDisk(snap *model.Snapshot) error {
 
 // collectCPU 用两次 GetSystemTimes 采样求差算 CPU 占用率。
 //
-// 为什么用采样差而不是别的办法：
-//   - GlobalMemoryStatusEx 那样的"瞬时值"对 CPU 不存在，占用率本质是一段时间的比值。
-//   - 性能计数器（PDH）需要加载额外 DLL 且 API 面很大，与"尽量少动作"的红线不符。
-//
-// 口径注意：GetSystemTimes 的 Kernel 时间**已含 Idle**，
-// 因此 total = Kernel + User，busy = total - Idle。若把 Kernel 当成"纯内核忙时"
-// 再相加，算出来的占用率会系统性偏高（在本机实测会高出十几个百分点）。
+// GetSystemTimes 的 Kernel 时间**已含 Idle**，故 total = Kernel + User、
+// busy = total - Idle；把 Kernel 当成"纯内核忙时"再相加会让占用率系统性偏高。
+// 不用 PDH 性能计数器：它需要加载额外 DLL，与"尽量少动作"的红线不符。
 func collectCPU(ctx context.Context, snap *model.Snapshot) error {
 	first, err := winapi.GetSystemTimes()
 	if err != nil {

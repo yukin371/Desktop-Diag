@@ -10,24 +10,9 @@ import (
 	"golang.org/x/sys/windows/registry"
 )
 
-// 本文件封装**只读**注册表访问。
-//
-// # 为什么用 x/sys/windows/registry 而不是手写 advapi32 声明
-//
-// 该包已经正确处理了 REG_SZ / REG_EXPAND_SZ / REG_MULTI_SZ / REG_DWORD 的
-// 编码差异与缓冲区重试逻辑，重写一遍只会引入新的缺陷。它是 golang.org/x/sys
-// 的一部分，属于基线唯一允许的第三方模块。
-//
-// # 红线边界（C-01 只读不写）
-//
-// 本文件**只**使用 OpenKey / GetValue / ReadValueNames / ReadSubkeyNames 这四类
-// 读取调用。x/sys/windows/registry 虽然也提供 Set* / CreateKey / DeleteKey，
-// 但本包一律不调用；阶段 4 的合规扫描会对整个 internal/ 目录做 grep 验证。
-//
-// # 最小权限
-//
-// 打开键时只申请真正需要的权限位，而不是 registry.READ（它含 NOTIFY）。
-// 权限位越少，被组策略或安全软件拦截的概率越低，也越不容易被误认为可疑行为。
+// 本文件封装**只读**注册表访问，只用 OpenKey / GetValue / ReadSubkeyNames 这类读取调用。
+// 用 x/sys/windows/registry 而不是手写 advapi32 声明：它已正确处理各值类型的编码差异与缓冲区重试。
+// 打开键时只申请真正需要的权限位（不含 NOTIFY），权限位越少越不容易被组策略或安全软件拦截。
 
 // regReadAccess 是读取单个值所需的权限。
 const regReadAccess = registry.QUERY_VALUE
@@ -36,18 +21,13 @@ const regReadAccess = registry.QUERY_VALUE
 const regEnumAccess = registry.QUERY_VALUE | registry.ENUMERATE_SUB_KEYS
 
 // RegReadString 读取一个字符串值（REG_SZ 或 REG_EXPAND_SZ）。
-//
-// REG_EXPAND_SZ 不会被展开：本工具只读取 ProductName 之类的固定文本，
-// 环境变量引用（如 %SystemRoot%）由调用方按需自行处理。
+// REG_EXPAND_SZ 不会被展开：环境变量引用（如 %SystemRoot%）由调用方按需自行处理。
 func RegReadString(root registry.Key, path, name string) (string, error) {
 	return regReadString(root, path, name, regReadAccess)
 }
 
 // RegReadString64 同 RegReadString，但强制使用 64 位注册表视图。
-//
-// 用于 HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion 这类键：在 64 位系统上
-// 该键本身有 32/64 两个视图，必须显式指定才能稳定拿到同一个结果，
-// 否则 32 位宿主进程与 64 位宿主进程读到的 OS 名称可能不一致。
+// CurrentVersion 这类键在 64 位系统上有 32/64 两个视图，不显式指定会让不同位数的宿主进程读到不同的 OS 名称。
 func RegReadString64(root registry.Key, path, name string) (string, error) {
 	return regReadString(root, path, name, regReadAccess|registry.WOW64_64KEY)
 }
@@ -82,9 +62,7 @@ func RegReadUint32(root registry.Key, path, name string) (uint32, error) {
 }
 
 // RegReadMultiString 读取一个 REG_MULTI_SZ 值。
-//
-// 返回的切片已剔除空串：REG_MULTI_SZ 在写入时常常留下尾部空元素，
-// 直接透传会让报告出现空行，也会让"DNS 列表为空"的判断失准。
+// 返回的切片已剔除空串：该类型写入时常常留下尾部空元素，透传会让报告出现空行、也会让"DNS 列表为空"的判断失准。
 func RegReadMultiString(root registry.Key, path, name string) ([]string, error) {
 	k, err := registry.OpenKey(root, path, regReadAccess)
 	if err != nil {
@@ -115,12 +93,8 @@ func RegEnumSubKeys(root registry.Key, path string) ([]string, error) {
 }
 
 // RegKeyExists 报告指定路径是否存在且可读。
-//
-// 用于区分两种截然不同的情况：
-//   - 键不存在（例如系统从未配置过该网卡的 DNS）→ 正常
-//   - 键存在但读不到（权限不足 / 被安全软件拦截）→ 必须记入 CollectFailure
-//
-// 两者都不应被误报成"DNS 配置为空"（基线场景 S-17）。
+// 用于区分"键不存在"（例如从未配置过该网卡的 DNS，属正常）与"键存在但读不到"（权限不足或被拦截，必须记入 CollectFailure），
+// 避免把后者误报成"DNS 配置为空"。
 func RegKeyExists(root registry.Key, path string) bool {
 	k, err := registry.OpenKey(root, path, regReadAccess)
 	if err != nil {
@@ -130,17 +104,13 @@ func RegKeyExists(root registry.Key, path string) bool {
 	return true
 }
 
-// RegReadFirstString 按顺序尝试多个值名，返回第一个存在且非空的值。
-//
-// 返回 (值名, 值, 错误)。全部不存在时返回 ("", "", ErrRegNotFound)。
-// 用于 DNS 的 NameServer / DhcpNameServer 兜底链：静态配置优先于 DHCP 下发，
-// 但静态值为空串时应继续尝试下一个，而不是就此认定"无 DNS"。
+// RegReadFirstString 按顺序尝试多个值名，返回第一个存在且非空的值；全部不存在时返回 ErrRegNotFound。
+// 用于 DNS 的 NameServer / DhcpNameServer 兜底链：静态配置优先，但静态值为空串时应继续试下一个，而不是认定"无 DNS"。
 func RegReadFirstString(root registry.Key, path string, names ...string) (string, string, error) {
 	if len(names) == 0 {
 		return "", "", fmt.Errorf("读取 %s: 未提供任何候选值名", path)
 	}
 
-	// 只打开一次键，避免为每个候选值重复 OpenKey。
 	k, err := registry.OpenKey(root, path, regReadAccess)
 	if err != nil {
 		return "", "", wrapRegError("打开", path, err)
@@ -152,7 +122,7 @@ func RegReadFirstString(root registry.Key, path string, names ...string) (string
 		val, _, err := k.GetStringValue(name)
 		if err != nil {
 			if errors.Is(err, registry.ErrNotExist) {
-				continue // 该值名不存在：继续试下一个
+				continue
 			}
 			if firstErr == nil {
 				firstErr = wrapRegErrorValue("读取", path, name, err)
@@ -170,17 +140,11 @@ func RegReadFirstString(root registry.Key, path string, names ...string) (string
 }
 
 // ErrRegNotFound 表示注册表路径或值名不存在。
-//
-// 调用方可以用 errors.Is(err, ErrRegNotFound) 把"从未配置"与"读取失败"分开：
-// 前者通常是正常现象，后者必须计入诊断完整性告警（R-19）。
+// 调用方可用 errors.Is(err, ErrRegNotFound) 把"从未配置"（通常正常）与"读取失败"（必须计入诊断完整性告警）分开。
 var ErrRegNotFound = errors.New("注册表项不存在")
 
-// wrapRegError 把 registry 的错误附上路径上下文，并在"不存在"时同时挂上
-// ErrRegNotFound 哨兵。
-//
-// 这里用了两个 %w（Go 1.20 起支持），于是调用方两种判断都能写：
-//   - errors.Is(err, registry.ErrNotExist) —— 判断键/值确实不存在
-//   - errors.Is(err, ErrRegNotFound)       —— 判断属于"未配置"这一类
+// wrapRegError 把 registry 的错误附上路径上下文，并在"不存在"时同时挂上 ErrRegNotFound 哨兵。
+// 这里用了两个 %w（Go 1.20 起支持），调用方既能匹配 registry.ErrNotExist，也能匹配 ErrRegNotFound。
 func wrapRegError(action, path string, err error) error {
 	return regWrap(fmt.Sprintf("%s注册表键 %s", action, path), err)
 }
@@ -208,9 +172,7 @@ func dropEmptyStrings(in []string) []string {
 	return out
 }
 
-// ── 本工具实际用到的注册表路径 ────────────────────────────────
-//
-// 集中在此，方便阶段 4 核对"只读访问了哪些键"以及阶段 6 生成文档。
+// 本工具只读访问的注册表路径。
 
 const (
 	// RegPathWindowsVersion 存放操作系统显示名称与版本。
@@ -222,10 +184,10 @@ const (
 
 // Windows 版本键下的值名。
 const (
-	RegValueProductName    = "ProductName"    // 例如 "Windows 11 Pro for Workstations"
-	RegValueDisplayVersion = "DisplayVersion" // 例如 "24H2"
-	RegValueCurrentBuild   = "CurrentBuild"   // 例如 "26200"
-	RegValueUBR            = "UBR"            // 修订号，需与 CurrentBuild 拼成 26200.xxxx
+	RegValueProductName    = "ProductName"
+	RegValueDisplayVersion = "DisplayVersion"
+	RegValueCurrentBuild   = "CurrentBuild"
+	RegValueUBR            = "UBR" // 修订号，需与 CurrentBuild 拼成 26200.xxxx
 )
 
 // 网卡接口键下的值名。
@@ -236,10 +198,7 @@ const (
 	RegValueDhcpIPAddress  = "DhcpIPAddress"
 )
 
-// ParseNameServerList 把注册表里的 DNS 列表文本拆成地址切片。
-//
-// 该值既可能是 "8.8.8.8,1.1.1.1"，也可能是 "8.8.8.8 1.1.1.1"，
-// 两种分隔符都要支持。返回的地址已去空白与空项。
+// ParseNameServerList 把注册表里的 DNS 列表文本拆成地址切片，逗号、分号与空白分隔都要支持。
 func ParseNameServerList(s string) []string {
 	fields := strings.FieldsFunc(s, func(r rune) bool {
 		return r == ',' || r == ';' || r == ' ' || r == '\t' || r == '\n' || r == '\r'
