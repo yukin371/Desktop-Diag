@@ -217,6 +217,8 @@ T-03 的 Win32 布局验证仍是高风险前置任务。T-35 的 PRD 文字修�
 
 ### 阶段 4 · 测试
 
+阶段四启动入口、验收步骤、场景矩阵和结果台账见 [`doc/phase4/README.md`](../phase4/README.md)、[`00-validation-plan.md`](../phase4/00-validation-plan.md) 与 [`01-results.md`](../phase4/01-results.md)。
+
 - [x] **T-27** 单元测试补齐，覆盖率达标（整体 ≥70%）
 - [ ] **T-28** 集成验收测试（`ipconfig` 比对 / `ping` 比对 / BOM 十六进制 / GBK 目视 / 退出码三态）
 - [ ] **T-29** 场景演练 S-01 ~ S-18
