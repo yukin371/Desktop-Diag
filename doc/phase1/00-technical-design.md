@@ -1,14 +1,16 @@
-# Desktop-Diag 技术方案设计 v1.0（阶段 1 交付物）
+# Desktop-Diag 技术方案设计 v1.1（阶段 1 交付物）
 
 | 项目 | 内容 |
 | --- | --- |
 | 文档状态 | 已冻结（FROZEN） |
 | 日期 | 2026-09-30 |
-| 上游输入 | `doc/phase0/01-requirements-baseline.md`（需求基线 v1.0，41 条功能性需求 / 19 条判定规则 / 7 条红线） |
+| 上游输入 | `doc/phase0/01-requirements-baseline.md`（需求基线 v1.1，41 条功能性需求 / 19 条判定规则 / 7 条红线） |
 | 下游消费者 | 阶段 2 任务拆解、阶段 3 编码、阶段 4 测试、阶段 5 工程化 |
 | 设计原则 | 纯 Win32 API · 零脚本引擎 · 分层解耦 · 全部判定可单测 · 采集器注册式扩展 |
 
 ---
+
+> 本文代码块为设计示意，不是逐字段实现快照；phase3 代码及本轮审计给出落地状态。
 
 ## 1. 设计目标与约束映射
 
@@ -19,7 +21,7 @@
 | 新增采集域零改核心 | REQ-N-09、Q1 | 采集器注册表 + 报告分节注册表，双注册点 |
 | 单文件、免安装 | C-07、REQ-N-05 | `CGO_ENABLED=0` + `-trimpath` + `-ldflags "-s -w"` 静态编译 |
 | 单项失败不崩溃 | REQ-F-702、E6 | 统一降级总纲：`Collector` 失败被捕获并记入 `Snapshot.Failures`，调度不中断、状态不回滚 |
-| 报告写入多级降级 | Q2、REQ-F-506 | 独立 `report.Writer`，四级候选链 + 写探针 |
+| 报告写入多级降级 | Q2、REQ-F-506 | 独立 `report.Writer`，四级候选链 + 正式报告 O_EXCL 创建；产品运行链不得另建探针文件 |
 
 ---
 
@@ -156,7 +158,7 @@ Desktop-Diag/
 
 ## 4. 核心数据结构（`internal/model`）
 
-> 设计要点：全部为**值语义的普通结构体**，无指针网状引用、无接口，保证可比较、可序列化、可 golden 测试。
+> 设计要点：全部为**值语义的普通结构体**，无指针网状引用、无接口，便于序列化与 golden 测试；含切片的结构体不可直接用 == 比较，应比较字段或使用 reflect.DeepEqual。
 
 ### 4.1 快照根对象
 
@@ -218,7 +220,8 @@ type Adapter struct {
 	VirtualKind  string   // "VMware" / "Hyper-V" / "VirtualBox" / "TAP" / "WireGuard" / "Loopback" / ""
 	IPv4         []Addr   // 地址 + 掩码 + 前缀长度
 	IPv6         []Addr
-	Gateways     []string // IPv4 默认网关（来自 FirstGatewayAddress + 注册表兜底）
+	Gateways     []string // IPv4 默认网关（来自 FirstGatewayAddress）
+	GatewaysV6   []string // IPv6 网关，仅展示与默认路由判断，不参与 IPv4 ICMP
 	DNS          []string // DNS 服务器（来自 FirstDnsServerAddress + 注册表兜底）
 	DNSSource    string   // "GetAdaptersAddresses" / "Registry" / "未采集"
 	DHCPEnabled  bool
@@ -391,16 +394,16 @@ func RegisterSection(title string, order int, r SectionRenderer)
 | 计算机名 | kernel32 | `GetComputerNameExW(ComputerNameDnsHostname)` | 无 | — |
 | OS 版本 | ntdll | `RtlGetVersion` | 无 | 规避 `GetVersionEx` 版本谎报 |
 | OS 显示名 | advapi32 | 注册表 `HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion` → `ProductName` / `DisplayVersion` | 读权限（普通用户可读） | 失败仅影响显示名 |
-| 运行时长 | kernel32 | `GetTickCount64` | 无 | 返回 ms，需注意 49.7 天回绕（uint64 实际 5.8 亿年） |
+| 运行时长 | kernel32 | `GetTickCount64` | 无 | GetTickCount64 不存在 32 位 GetTickCount 的 49.7 天回绕问题 |
 | 网卡全量信息 | iphlpapi | `GetAdaptersAddresses(AF_UNSPEC, GAA_FLAG_INCLUDE_GATEWAYS\|GAA_FLAG_SKIP_ANYCAST\|GAA_FLAG_SKIP_MULTICAST)` | 无 | ★ 核心难点，见 6.2 |
 | 网关 | iphlpapi | `IP_ADAPTER_ADDRESSES_LH.FirstGatewayAddress` | 无 | 需 `GAA_FLAG_INCLUDE_GATEWAYS` |
 | DNS | iphlpapi | `IP_ADAPTER_ADDRESSES_LH.FirstDnsServerAddress` | 无 | 主来源 |
 | DNS 兜底 | advapi32 | 注册表 `…\Tcpip\Parameters\Interfaces\{GUID}` → `NameServer` / `DhcpNameServer` | 读权限 | 见 6.4 |
-| DHCP 状态 | advapi32 | 同上键 → `EnableDHCP` | 读权限 | 失败 → `DHCPKnown=false`，不误报 |
+| DHCP 状态 | iphlpapi | `IP_ADAPTER_ADDRESSES.Flags` 的 DHCP 位 | 无 | 当前实现使用 API 位，未调用注册表 DHCP 兜底 |
 | ICMP 探测 | iphlpapi | `IcmpCreateFile` / `IcmpSendEcho` / `IcmpCloseHandle` | **无需管理员** | ★ 见 6.3 |
 | CPU 占用率 | kernel32 | `GetSystemTimes` × 2（间隔 1s） | 无 | idle/kernel/user 三个 FILETIME 求差 |
 | 内存 | kernel32 | `GlobalMemoryStatusEx` | 无 | `ullTotalPhys` / `ullAvailPhys` |
-| 磁盘 | kernel32 | `GetDiskFreeSpaceExW` | 无 | 系统盘盘符取 `%SystemDrive%` |
+| 磁盘 | kernel32 | `GetDiskFreeSpaceExW` | 无 | 系统盘盘符由 `GetWindowsDirectoryW` 推导 |
 | 管理员检测 | advapi32 | `x/sys/windows` → `Token.IsElevated()` | 无 | — |
 | 控制台代码页 | kernel32 | `GetConsoleOutputCP` / `SetConsoleOutputCP(65001)` | 无 | 仅当 stdout 为控制台时调用 |
 
@@ -410,9 +413,9 @@ func RegisterSection(title string, order int, r SectionRenderer)
 
 这是全项目**最容易出错**的地方（结构体布局错位会导致内存越界或字段乱码）。设计对策：
 1. 严格按 `iptypes.h`（`_IP_ADAPTER_ADDRESSES_LH`）定义，字段顺序与对齐不得调整；
-2. 结构体首字段为 `Length uint32`，调用时预置为 `unsafe.Sizeof`，**用作自检**；
-3. 首次调用带 `ULONG` size 参数的探测式为「先传 15KB 缓冲区，若返回 `ERROR_BUFFER_OVERFLOW` 则按返回值重新分配」；
-4. 采用**双次调用**模式：第一次 `size=0` 取所需大小 → 分配 → 第二次取数据；
+2. 结构体首字段 `Length` 由系统返回，遍历时检查节点长度及缓冲区边界，不预填链表节点长度；
+3. 首次提供具名常量定义的初始缓冲区；
+4. 若返回 `ERROR_BUFFER_OVERFLOW`，按返回大小加余量重新分配，并在有界重试内获取数据；不保证恰好调用两次；
 5. 验证手段：阶段 3 完成后，将输出与 `ipconfig /all` 逐字段人工比对（阶段 4 验收项）。
 
 ```go
@@ -449,7 +452,7 @@ type ipAdapterAddresses struct {
 }
 ```
 
-**结构体完整性规则**：即使 MVP 不使用 `Dhcpv6ClientDuid` 之后的字段，也必须完整声明以保证数组遍历时 `Next` 指针偏移正确。
+**结构体完整性规则**：声明采用完整 SDK 布局，并以 sizeof/字段偏移测试验证；Next 是链表指针，后续字段不影响其自身偏移，不能用数组步长语义解释链表遍历。
 
 ### 6.3 核心难点二：非管理员 ICMP 探测
 
@@ -497,7 +500,7 @@ func Send(dst net.IP, count int, timeout time.Duration) (Result, error) {
 
 ### 6.5 只读保证
 
-`internal/winapi` 包内**不存在任何写入系统状态的 API 声明**（无 `RegSetValueEx`、无 `SetIpInterfaceEntry`、无 `CreateService`）。这将作为阶段 4 的合规验证项之一：全仓库 grep 写入类 API 名称应为 0 命中。
+`internal/winapi` 包内**不存在任何写入系统状态的 API 声明**（无 `RegSetValueEx`、无 `SetIpInterfaceEntry`、无 `CreateService`）。这将作为阶段 4 的合规验证项之一：应扫描运行时代码的实际 API 调用与进程启动点，并复核允许写入；文档/测试中的 API 名称不算违规命中。
 
 ---
 
@@ -531,7 +534,7 @@ const (
 )
 
 // 无效 DNS 地址（R-04）
-var InvalidDNSServers = []string{"0.0.0.0", "127.0.0.1"}
+var InvalidDNSServers = []string{"0.0.0.0", "::"} // 回环 DNS 代理合法，见 CR-03
 
 // TCP 443 候选目标（C1 决策）
 var TCP443Targets = []string{"223.5.5.5:443", "223.6.6.6:443", "119.29.29.29:443"}
@@ -593,7 +596,7 @@ func r01APIPA(s *model.Snapshot) []model.Issue {
 func Classify(probes []model.ProbeResult) []model.LayerConclusion
 ```
 
-- 输入全部为已完成的 `ProbeResult`，**不发起任何网络请求** → 可 100% 单测覆盖 7 种矩阵行；
+- 输入全部为已完成的 `ProbeResult`，**不发起任何网络请求** → 应覆盖基线矩阵及部分缺失、Skipped、多网卡等边界；语句覆盖 100% 不代表这些证据组合均正确，Go coverage 不统计分支覆盖率；
 - 未执行的探测（`Skipped`）在矩阵中按「不可用」处理并给出 `undetermined` 结论。
 
 ### 7.5 排序与聚合
@@ -748,7 +751,7 @@ func Write(cands []candidate, snap *model.Snapshot, issues []model.Issue) (Outco
   }
 ```
 
-Go 源码统一以 UTF-8 编写，直接写 UTF-8 字节；在 CP=65001 控制台下中文正常显示。若 `SetConsoleOutputCP` 失败（极旧系统），降级为**纯 ASCII 输出模式**（符号与颜色全部关闭，仅保留 `[严重]/[警告]` 文本标记）。
+Go 源码统一 UTF-8；真实控制台保存原代码页与模式后设置 UTF-8/VT。代码页不可用或设置失败时使用 ASCII 英文进度/等级/路径标记，动态中文字段转为 Unicode 转义，完整中文保留在 UTF-8 报告。VT 失败或 `NO_COLOR` 使用 Unicode 纯文本，重定向不改变控制台。stdout/stderr 分别初始化并按逆序恢复；输出与恢复错误计为程序错误。
 
 ### 9.2 颜色与符号降级矩阵
 
@@ -811,8 +814,8 @@ func main() {
 
 | 层级 | 失败类型 | 处理策略 | 是否影响退出码 |
 | --- | --- | --- | --- |
-| 参数解析 | 非法参数/目录不存在 | 打印用法 + 错误说明 | 2 |
-| 采集器 | 单项失败 | 捕获 → `Snapshot.Failures` → R-19；继续下一项 | 否（除非全部失败） |
+| 参数解析 | 非法参数 | 打印用法 + 错误说明；-o 目录不存在属于报告层创建/降级，不是 CLI 错误 | 2 |
+| 采集器 | 单项失败 | 捕获 → `Snapshot.Failures` → R-19；继续下一项 | 否；退出码仍由有效告警与报告写入结果决定 |
 | 采集器 | **全部**采集失败 | 仍生成报告（仅含完整性告警） | 否 |
 | 探测 | 无活动网卡 | 全部 `Skipped` + 原因；不产生误导性严重告警 | 否 |
 | 探测 | `IcmpCreateFile` 失败 | 记入 `Failures`；**不**触发 R-14（网关不可达），改触发 R-19 | 否 |
@@ -910,7 +913,7 @@ go build -trimpath `
 | 静态检查 | `go vet ./...` 零问题（REQ-N-11） | 3、5 |
 | 测试 | `go test ./... -cover`，整体 ≥ 70% | 4、5 |
 | 交叉编译 | `GOOS=windows GOARCH=amd64` + （可选）`arm64` | 5、7 |
-| 合规扫描 | 全仓 grep 写入类 API 名称，期望 0 命中（见 6.5） | 4、5 |
+| 合规扫描 | 扫描运行时代码的禁用 API/进程调用并人工核对写入白名单（见 6.5） | 4、5 |
 
 ---
 
@@ -923,7 +926,7 @@ go build -trimpath `
 | RK-03 | CP 65001 在个别终端下中文仍异常 | 可读性 | 低 | 三级降级至纯 ASCII 模式 |
 | RK-04 | 注册表 `Tcpip\Interfaces` 键不可读 | DNS 为空导致误报 R-03 | 中 | `DNSSource="未采集"` 时不触发 R-03，改触发 R-19（S-17） |
 | RK-05 | 磁盘阈值单位口径（GB vs GiB）争议 | 验收争议 | 低 | 统一按 GiB 计算、显示为 GB，阶段 6 文档显式说明 |
-| RK-06 | TCP 443 候选目标在国内网络环境失效 | 误报外网中断 | 中 | 候选列表 3 个 IP + 末位回退 `www.baidu.com:443`（仅当 DNS 正常时）；全部失败且网关正常才判 R-17 |
+| RK-06 | TCP 443 候选目标在国内网络环境失效 | 误报外网中断 | 中 | 固定候选列表 3 个 IP；当前未实现域名末位回退，不将其作为已交付能力。候选失败须限定目标与直连语义，不能代表全部外网故障 |
 | RK-07 | 多网卡环境下 ICMP 探测无法指定出接口 | 结论归属模糊 | 中 | `IcmpSendEcho` 按目标 IP 由系统路由决定出口；报告中按目标网关归属网卡输出，并注明"实际出口由系统路由表决定" |
 | RK-08 | arm64 构建下结构体对齐差异 | 可选产物失败 | 低 | arm64 列为可选目标；主目标 amd64 必须通过 |
 
@@ -1021,3 +1024,17 @@ type memoryStatusEx struct {
 **交付物**：`doc/phase1/00-technical-design.md`（本文件）
 
 **下一步**：阶段 2 —— 任务拆解（WBS + 里程碑 + 依赖排序 + 可执行 Todo）。
+
+## 17. 阶段 3 落地差异（2026-09-30）
+
+- `cli` 与 `ui` 的功能分别集中于 `cli.go`、`ui.go`，第 3 节目录树是设计布局；缺少 README、CI、test/release 脚本属于后续阶段任务。
+- 采集器按 `collect/init` 注册，报告只依赖 model；新增采集域须分别在 collect/report/detect 注册，禁止在 collect 中 import report 形成反向耦合。
+- 规则目录包含 Condition 与 Deferred，R-19 在普通规则执行完后再结算，避免漏掉 recover 追加的失败。第 7 节示意代码不应再额外追加第二条 R-19。
+- DNS 以 API 为主、注册表为兜底；DHCP 使用 API 标志；未接入注册表静态 IP/网关校验，不将拟议兜底写成已实现。
+- 采集采用 25s context，目标总预算 30s，给报告留约 5s；最多 4 个网关工作者并行，每包超时不超过剩余预算，DNS/TCP 仍按固定顺序执行，取消保留所有缺失项。同步 Win32 与文件系统调用不能由 context 强行中断，因此不承诺任意异常驱动/UNC 挂起情况下的硬截止。
+- 进度按同步开始/结束事件即时呈现，区分完成/部分采集/失败；`-v` 输出来源、原始字段与分项耗时。报告头计采集与判定，尾部计截至正文写入的耗时，控制台总耗时包含报告关闭。
+- 网卡地址仍来自 GetAdaptersAddresses；GetIfTable2Ex 补管理状态并排除 NDIS 过滤层，SetupDi/CM 只读查询补禁用设备。按 GUID/索引合并，不伪造 DHCP/地址，不将管理未知判为禁用。仅接口清单的空 IP/网关/DNS 标为未采集，不参与配置故障规则，活动物理接口的数据缺失计入 R-19。仅无活动物理接口时选择有默认路由的 VM/VPN，Overlay/Other 不盲探。
+- 控制台已实现彩色/Unicode/ASCII 三档与共享状态恢复，未设置输入代码页；编码能力与恢复失败均有固定输入测试。
+- model/detect 无 Windows tag；ClassifyNetwork 位于纯 model，probe/classify 为无 tag 薄封装。Windows API 文件仍受平台限制，纯 model/detect/probe 分类子集可跨平台构建。
+- 共享 ProbeEvidence 区分未执行、中断、完整失败与成功；全部 TCP 失败要求每个不同候选都完成，重复记录不补足缺失目标。规则与分类均使用此契约。
+- 阶段 3 的修复、证据与剩余平台验收见 [交付记录](../phase3/01-completion.md)；早期审计保留在 [审计记录](../phase3/00-implementation-review.md)。
