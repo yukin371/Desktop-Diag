@@ -63,8 +63,22 @@ function Get-GitValue {
     }
 }
 
+# Preserve caller settings; toolchain selection and child PATH stay process-local.
+$diagOriginalPath = $env:PATH
+$diagOriginalCGO = $env:CGO_ENABLED
+$diagOriginalToolchain = $env:GOTOOLCHAIN
 Push-Location $repoRoot
 try {
+    # Pin the complete Go toolchain, including coverage/compiler child processes.
+    $diagRequiredGo = "go1.26.0"
+    $env:GOTOOLCHAIN = $diagRequiredGo
+    $diagGoRoot = (& go env GOROOT | Out-String).Trim()
+    if ($LASTEXITCODE -ne 0) { throw "Required Go toolchain $diagRequiredGo unavailable. Preinstall it for offline builds." }
+    $env:PATH = (Join-Path $diagGoRoot "bin") + ";" + $diagOriginalPath
+    $env:GOTOOLCHAIN = "local"
+    $diagGoVersion = (& go env GOVERSION | Out-String).Trim()
+    if ($LASTEXITCODE -ne 0 -or $diagGoVersion -ne $diagRequiredGo) { throw "Expected $diagRequiredGo, got $diagGoVersion" }
+
     # ── 版本元数据 ────────────────────────────────────────────
     if ([string]::IsNullOrWhiteSpace($Version)) {
         $Version = Get-GitValue -Arguments @("describe", "--tags", "--always", "--dirty") -Fallback "dev"
@@ -106,9 +120,12 @@ try {
     }
 
     # 自检：确认版本注入确实生效
-    $reported = (& $outExe 2>&1 | Out-String).Trim()
+    $reported = (& $outExe -version 2>&1 | Out-String).Trim()
     Write-Host "版本自检：$reported"
 }
 finally {
+    $env:PATH = $diagOriginalPath
+    $env:CGO_ENABLED = $diagOriginalCGO
+    $env:GOTOOLCHAIN = $diagOriginalToolchain
     Pop-Location
 }
