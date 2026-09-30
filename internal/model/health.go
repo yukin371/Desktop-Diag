@@ -1,3 +1,4 @@
+// Defines known-state health samples and derived resource usage.
 package model
 
 // Health 是系统健康度快照（REQ-F-301 ~ 303）。

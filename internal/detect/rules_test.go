@@ -226,8 +226,8 @@ func TestRuleR04InvalidDNS(t *testing.T) {
 		want int
 	}{
 		{"仅 0.0.0.0", []string{"0.0.0.0"}, 1},
-		{"仅 127.0.0.1", []string{"127.0.0.1"}, 1},
-		{"两个无效值", []string{"0.0.0.0", "127.0.0.1"}, 1},
+		{"仅 127.0.0.1", []string{"127.0.0.1"}, 0},
+		{"两个无效值", []string{"0.0.0.0", "::"}, 1},
 		{"带空白", []string{" 0.0.0.0 "}, 1},
 		{"无效与有效并存则不算仅含", []string{"0.0.0.0", "8.8.8.8"}, 0},
 		{"正常值", []string{"192.168.1.1"}, 0},
@@ -423,6 +423,9 @@ func TestRuleR14R18MutualExclusion(t *testing.T) {
 		gwProbe("以太网", "192.168.1.1", 4, 0, 0),
 		tcpProbe("223.5.5.5:443", false),
 		tcpProbe("223.6.6.6:443", false),
+		tcpProbe("119.29.29.29:443", false),
+		dnsProbe(model.ProbeDNSSystem, false),
+		dnsProbe(model.ProbeDNSDirect, false),
 	)
 	if got := run(t, "R-14", s); len(got) != 1 {
 		t.Errorf("网关与公网都不通时应报 R-14，实际 %d 条", len(got))
@@ -462,7 +465,7 @@ func TestRuleR15LocalDNSBroken(t *testing.T) {
 }
 
 func TestRuleR16DNSAllBroken(t *testing.T) {
-	s := withProbes(snap(), dnsProbe(model.ProbeDNSDirect, false))
+	s := withProbes(snap(), dnsProbe(model.ProbeDNSSystem, false), dnsProbe(model.ProbeDNSDirect, false))
 	if got := run(t, "R-16", s); len(got) != 1 {
 		t.Errorf("直连 DNS 失败应触发 R-16，实际 %d 条", len(got))
 	}
@@ -483,6 +486,9 @@ func TestRuleR17WANPortBlocked(t *testing.T) {
 		gwProbe("以太网", "192.168.1.1", 4, 4, 5),
 		tcpProbe("223.5.5.5:443", false),
 		tcpProbe("223.6.6.6:443", false),
+		tcpProbe("119.29.29.29:443", false),
+		dnsProbe(model.ProbeDNSSystem, false),
+		dnsProbe(model.ProbeDNSDirect, false),
 	)
 	if got := run(t, "R-17", s); len(got) != 1 {
 		t.Errorf("网关可达且 443 全灭应触发 R-17，实际 %d 条", len(got))
@@ -507,7 +513,7 @@ func TestRuleR17WANPortBlocked(t *testing.T) {
 	}
 
 	s = withProbes(snap(), tcpProbe("223.5.5.5:443", false))
-	if got := run(t, "R-17", s); len(got) != 1 {
+	if got := run(t, "R-17", s); len(got) != 0 {
 		t.Errorf("无网关且 443 全灭应触发 R-17，实际 %d 条", len(got))
 	}
 

@@ -1,5 +1,6 @@
 //go:build windows
 
+// 本文件合并地址 API、接口管理状态与禁用设备，并回退只读 DNS 配置。
 package collect
 
 import (
@@ -17,7 +18,12 @@ import (
 )
 
 // networkCollector 采集网络适配器信息。
-type networkCollector struct{}
+type networkCollector struct {
+	// addresses/inventory/disabled 是独立只读数据源，可注入失败以验证降级。
+	addresses func(uint32, uint32) ([]winapi.RawAdapter, error)
+	inventory func() ([]winapi.RawAdapter, error)
+	disabled  func() ([]winapi.RawAdapter, error)
+}
 
 // Name 实现 Collector。
 func (networkCollector) Name() string { return "网络适配器信息" }
@@ -27,10 +33,33 @@ func (networkCollector) EnvVar() string { return "network" }
 
 // Collect 实现 Collector。
 func (c networkCollector) Collect(ctx context.Context, snap *model.Snapshot) error {
-	raw, err := winapi.GetAdaptersAddresses(winapi.AFUnspec, winapi.DefaultAdapterFlags)
-	if err != nil {
-		return fmt.Errorf("枚举网络适配器失败: %w", err)
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("网络采集未执行: %w", err)
 	}
+	if c.addresses == nil {
+		c.addresses = winapi.GetAdaptersAddresses
+	}
+	if c.inventory == nil {
+		c.inventory = winapi.GetInterfaceInventory
+	}
+	if c.disabled == nil {
+		c.disabled = winapi.GetDisabledNetworkDevices
+	}
+	raw, err := c.addresses(winapi.AFUnspec, winapi.DefaultAdapterFlags)
+	if err != nil {
+		snap.AddFailure(c.Name(), c.EnvVar(), fmt.Errorf("枚举网络地址失败: %w", err).Error(), true)
+	}
+	// inventory 提供已启用/已禁用状态以及地址 API 遗漏的接口。
+	inventory, inventoryErr := c.inventory()
+	if inventoryErr != nil {
+		snap.AddFailure(c.Name(), c.EnvVar(), inventoryErr.Error(), true)
+	}
+	// disabled 补充网络栈不再暴露的管理禁用设备。
+	disabled, disabledErr := c.disabled()
+	if disabledErr != nil {
+		snap.AddFailure(c.Name(), c.EnvVar(), disabledErr.Error(), true)
+	}
+	raw = mergeAdapterInventory(raw, append(inventory, disabled...))
 
 	adapters := make([]model.Adapter, 0, len(raw))
 	for _, r := range raw {
@@ -38,20 +67,32 @@ func (c networkCollector) Collect(ctx context.Context, snap *model.Snapshot) err
 
 		// DNS 单独走一条兜底链：GetAdaptersAddresses 在部分机器上会对"确实配了
 		// DNS"的网卡返回空列表（这正是基线场景 S-17）。
-		a.DNS, a.DNSSource = resolveDNS(r, snap)
+		if a.AdminKnown && !a.AdminEnabled {
+			a.DNSSource = model.DNSSourceMissing
+		} else {
+			a.DNS, a.DNSSource = resolveDNS(r, snap)
+		}
+		if a.AddressMissing && a.IsActive() && !a.IsVirtual && a.IfType != model.IfTypeLoopback {
+			snap.AddFailure(c.Name(), c.EnvVar(), fmt.Sprintf("接口 %d %s 的地址 API 数据缺失，IP/网关/DNS/DHCP 配置未知", a.Index, a.DisplayName()), true)
+		}
 
 		adapters = append(adapters, a)
 	}
 
 	// 按接口索引排序：GetAdaptersAddresses 的返回顺序在不同机器/不同运行时刻并不
 	// 保证一致，而报告要求两次运行结果可比（REQ-N-08）。
-	sort.SliceStable(adapters, func(i, j int) bool { return adapters[i].Index < adapters[j].Index })
+	sort.SliceStable(adapters, func(i, j int) bool {
+		if adapters[i].Index != adapters[j].Index {
+			return adapters[i].Index < adapters[j].Index
+		}
+		return adapters[i].ID < adapters[j].ID
+	})
 	snap.Adapters = adapters
 
 	for _, a := range adapters {
-		snap.AddRaw("网络适配器", "GetAdaptersAddresses",
-			fmt.Sprintf("IfIndex=%d 名称=%q 描述=%q 类型=%s 状态=%s MAC=%s 虚拟=%v 网关=%s DNS=%s(%s)",
-				a.Index, a.Name, a.Description, a.IfType, a.OperStatus,
+		snap.AddRaw("网络适配器", "GetAdaptersAddresses/GetIfTable2Ex/SetupDi",
+			fmt.Sprintf("IfIndex=%d ID=%q 名称=%q 描述=%q 类型=%s 状态=%s 管理状态已知=%v 启用=%v MAC=%s 虚拟=%v 网关=%s DNS=%s(%s)",
+				a.Index, a.ID, a.Name, a.Description, a.IfType, a.OperStatus, a.AdminKnown, a.AdminEnabled,
 				orNone(a.MAC), a.IsVirtual, orNone(strings.Join(a.Gateways, ", ")),
 				orNone(strings.Join(a.DNS, ", ")), a.DNSSource))
 
@@ -78,24 +119,26 @@ func (c networkCollector) Collect(ctx context.Context, snap *model.Snapshot) err
 func convertAdapter(r winapi.RawAdapter) model.Adapter {
 	v4Gateways, v6Gateways := splitGateways(r.Gateways)
 	a := model.Adapter{
-		Index:       r.IfIndex,
-		Name:        cleanString(r.FriendlyName),
-		Description: cleanString(r.Description),
-		MAC:         cleanString(r.PhysicalAddress),
-		IfType:      ifTypeName(r.IfType),
-		OperStatus:  operStatusName(r.OperStatus),
-		DHCPEnabled: r.Dhcpv4Enabled,
-		DHCPKnown:   true,
-		Gateways:    v4Gateways,
-		GatewaysV6:  v6Gateways,
+		Index:          r.IfIndex,
+		ID:             r.AdapterName,
+		Name:           cleanString(r.FriendlyName),
+		Description:    cleanString(r.Description),
+		MAC:            cleanString(r.PhysicalAddress),
+		IfType:         ifTypeName(r.IfType),
+		OperStatus:     operStatusName(r.OperStatus),
+		DHCPEnabled:    r.Dhcpv4Enabled,
+		DHCPKnown:      r.AddressKnown,
+		Gateways:       v4Gateways,
+		GatewaysV6:     v6Gateways,
+		AdminKnown:     r.AdminKnown,
+		AdminEnabled:   r.AdminEnabled,
+		AddressMissing: !r.AddressKnown,
 	}
 
-	// AdminEnabled 恒为 true 是刻意的：GetAdaptersAddresses 不暴露管理启用位，
-	// 「网卡被禁用」与「网线没插」在 IF_OPER_STATUS 上都可能是 Down。宁可只说
-	// "状态 Down"，也不猜"网卡已被禁用"——后者会让运维去改一个本就正确的配置。
-	a.AdminEnabled = true
-
 	a.IsVirtual, a.VirtualKind = detectVirtual(a.Name, a.Description, a.IfType)
+	if r.HardwareKnown && !r.HardwareInterface && !a.IsVirtual {
+		a.IsVirtual, a.VirtualKind = true, model.VirtualOther
+	}
 
 	for _, v4 := range r.IPv4 {
 		a.IPv4 = append(a.IPv4, model.Addr{
@@ -116,6 +159,50 @@ func convertAdapter(r winapi.RawAdapter) model.Adapter {
 	return a
 }
 
+// mergeAdapterInventory 按 GUID 或接口索引合并状态；禁用设备按稳定身份去重。
+func mergeAdapterInventory(addresses, inventory []winapi.RawAdapter) []winapi.RawAdapter {
+	// result 拷贝输入，避免测试或调用者的原始列表被修改。
+	result := append([]winapi.RawAdapter(nil), addresses...)
+	for _, state := range inventory {
+		// matched 指向已有地址对象，没有匹配时补充无地址接口。
+		matched := -1
+		for i, adapter := range result {
+			// 两边都有稳定身份时只按身份匹配，避免热插拔复用索引合并不同设备。
+			sameID := state.AdapterName != "" && strings.EqualFold(adapter.AdapterName, state.AdapterName)
+			indexFallback := (state.AdapterName == "" || adapter.AdapterName == "") && state.IfIndex != 0 && adapter.IfIndex == state.IfIndex
+			if sameID || indexFallback {
+				matched = i
+				break
+			}
+		}
+		if matched < 0 {
+			result = append(result, state)
+			continue
+		}
+		// adapter 保留地址、DNS 与 DHCP API 信息，只覆盖有证据的管理元数据。
+		adapter := &result[matched]
+		if state.AdminKnown {
+			adapter.AdminKnown = true
+			adapter.AdminEnabled = state.AdminEnabled
+			adapter.OperStatus = state.OperStatus
+		}
+		if state.HardwareKnown {
+			adapter.HardwareKnown = true
+			adapter.HardwareInterface = state.HardwareInterface
+		}
+		if adapter.FriendlyName == "" {
+			adapter.FriendlyName = state.FriendlyName
+		}
+		if adapter.Description == "" {
+			adapter.Description = state.Description
+		}
+		if adapter.PhysicalAddress == "" {
+			adapter.PhysicalAddress = state.PhysicalAddress
+		}
+	}
+	return result
+}
+
 // resolveDNS 取得某块网卡的 DNS 服务器列表，并说明来源。
 //
 // 返回的 source 三者必须区分清楚，否则 R-03 会误报：
@@ -127,6 +214,9 @@ func convertAdapter(r winapi.RawAdapter) model.Adapter {
 func resolveDNS(r winapi.RawAdapter, snap *model.Snapshot) ([]string, string) {
 	if len(r.DNS) > 0 {
 		return r.DNS, model.DNSSourceGetAdaptersAddresses
+	}
+	if !r.AddressKnown {
+		return nil, model.DNSSourceMissing
 	}
 
 	// 注册表按 {GUID} 组织，没有 GUID 就定位不到子键，只能如实说"未采集"。

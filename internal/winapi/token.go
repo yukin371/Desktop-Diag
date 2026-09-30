@@ -1,5 +1,6 @@
 //go:build windows
 
+// Reads current process token elevation without requesting higher privileges.
 package winapi
 
 import (

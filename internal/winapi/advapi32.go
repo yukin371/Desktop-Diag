@@ -1,5 +1,6 @@
 //go:build windows
 
+// Reads registry values using query-only access and contextual errors.
 package winapi
 
 import (
@@ -32,6 +33,7 @@ func RegReadString64(root registry.Key, path, name string) (string, error) {
 	return regReadString(root, path, name, regReadAccess|registry.WOW64_64KEY)
 }
 
+// regReadString reads a registry string while retaining missing-value and permission distinctions.
 func regReadString(root registry.Key, path, name string, access uint32) (string, error) {
 	k, err := registry.OpenKey(root, path, access)
 	if err != nil {
@@ -154,6 +156,7 @@ func wrapRegErrorValue(action, path, name string, err error) error {
 	return regWrap(fmt.Sprintf("%s注册表值 %s\\%s", action, path, name), err)
 }
 
+// regWrap adds registry key/value context while preserving the original error chain.
 func regWrap(prefix string, err error) error {
 	if errors.Is(err, registry.ErrNotExist) {
 		return fmt.Errorf("%s: %w（%w）", prefix, err, ErrRegNotFound)

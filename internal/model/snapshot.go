@@ -3,6 +3,7 @@
 // 本包是叶子包：不 import 任何其他 internal 包，也不做 IO 或系统调用，
 // 只承载数据与作用于数据的纯函数，因此可以脱离真机在任意平台单测。
 // 全部为值语义的普通结构体，无指针网状引用、无接口，可比较、可序列化。
+// 本文件承载诊断快照、降级记录与采集对象的派生查询。
 package model
 
 import "time"
@@ -69,6 +70,9 @@ func (s *Snapshot) IPv6OnlyLinkLocal() bool {
 
 	hasLinkLocal := false
 	for _, a := range adapters {
+		if a.AddressMissing {
+			return false
+		}
 		if a.HasUsableIPv4() {
 			return false
 		}

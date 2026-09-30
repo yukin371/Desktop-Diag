@@ -1,3 +1,4 @@
+// Defines findings, severity ordering and normalized evidence.
 package model
 
 import "strings"

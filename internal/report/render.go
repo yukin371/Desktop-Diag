@@ -1,5 +1,6 @@
 //go:build windows
 
+// Renders the deterministic three-layer diagnostic report.
 package report
 
 import (
@@ -26,7 +27,7 @@ type RenderContext struct {
 	ExePath      string        // os.Executable() 的原始值，用于 UNC 检测
 	ReportPath   string        // 报告实际落盘路径（未落盘时留空）
 	PathNote     string        // 路径选择说明，例如 "已降级至用户目录（原因: ...）"
-	TotalElapsed time.Duration // 诊断总耗时
+	TotalElapsed time.Duration // 采集与判定耗时，落盘后的计时在报告尾与控制台记录。
 	GeneratedAt  time.Time     // 报告生成时刻（零值时回落 StartedAt）
 	PlainText    bool          // 纯文本模式：报告为 TXT，默认即纯文本
 }
@@ -45,7 +46,11 @@ func WriteCRLF(w io.Writer, s string) (int, error) {
 	normalized := strings.ReplaceAll(s, "\r\n", "\n")
 	normalized = strings.ReplaceAll(normalized, "\r", "\n")
 	normalized = strings.ReplaceAll(normalized, "\n", "\r\n")
-	return io.WriteString(w, normalized)
+	n, err := io.WriteString(w, normalized)
+	if err == nil && n != len(normalized) {
+		err = io.ErrShortWrite
+	}
+	return n, err
 }
 
 // Render 逐层渲染报告并写入 w，保证确定性（REQ-N-08）。
@@ -76,6 +81,7 @@ func ReportSections(snap *model.Snapshot, issues []model.Issue, ctx RenderContex
 	}
 }
 
+// renderCore assembles the header, three report layers and read-only footer.
 func renderCore(snap *model.Snapshot, issues []model.Issue, ctx RenderContext) string {
 	var sb strings.Builder
 
@@ -141,7 +147,7 @@ func headerBlock(snap *model.Snapshot, ctx RenderContext) string {
 	sb.WriteString("\n")
 	sb.WriteString(field("路径选择说明", pathNote(ctx)))
 	sb.WriteString("\n")
-	sb.WriteString(field("总耗时", formatSeconds(ctx.TotalElapsed)))
+	sb.WriteString(field("采集与判定耗时", formatSeconds(ctx.TotalElapsed)))
 	sb.WriteString("\n")
 
 	// S-10：UNC 部署路径要在报告头留线索，否则收集时无法判断报告为何落到本地。
@@ -169,6 +175,7 @@ func generatedAt(snap *model.Snapshot, ctx RenderContext) time.Time {
 	return snap.StartedAt
 }
 
+// osSummary combines available operating-system name, version and architecture.
 func osSummary(h model.Host) string {
 	name := strings.TrimSpace(h.OSName)
 	if name == "" {
@@ -183,6 +190,7 @@ func osSummary(h model.Host) string {
 	return name
 }
 
+// versionLine renders tool version and available build metadata.
 func versionLine(ctx RenderContext) string {
 	v := strings.TrimSpace(ctx.Version)
 	if v == "" {
@@ -199,6 +207,7 @@ func versionLine(ctx RenderContext) string {
 	return fmt.Sprintf("%s (commit %s, built %s)", v, commit, built)
 }
 
+// pathNote explains report destination selection and degradation.
 func pathNote(ctx RenderContext) string {
 	if s := strings.TrimSpace(ctx.PathNote); s != "" {
 		return s
@@ -207,6 +216,7 @@ func pathNote(ctx RenderContext) string {
 	return "未说明（调用方未提供路径信息）"
 }
 
+// layer1Content renders ordered findings and the diagnostic completeness summary.
 func layer1Content(snap *model.Snapshot, issues []model.Issue) string {
 	var sb strings.Builder
 
@@ -253,7 +263,7 @@ func writeIssue(sb *strings.Builder, is model.Issue) {
 	}
 	// 证据统一去空白、剔空行，避免出现只有项目符号没有内容的空行。
 	for _, ev := range model.NormalizeEvidence(is.Evidence) {
-		fmt.Fprintf(sb, "%s%s\n", indentEvidence, ev)
+		fmt.Fprintf(sb, "%s%s\n", indentEvidence, model.ChineseEvidence(ev))
 	}
 	if sug := strings.TrimSpace(is.Suggestion); sug != "" {
 		fmt.Fprintf(sb, "%s建议: %s\n", indentEvidence, sug)

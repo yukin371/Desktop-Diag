@@ -1,3 +1,4 @@
+// 本文件定义主机、网卡与地址模型及诊断对象的选择规则。
 package model
 
 import (
@@ -101,18 +102,21 @@ func (a Addr) IsLoopback() bool {
 
 // Adapter 描述一块网络适配器。
 type Adapter struct {
-	Index        uint32
-	Name         string // FriendlyName，如 "以太网"
-	Description  string // 硬件描述，如 "Realtek PCIe GbE Family Controller"
-	MAC          string // "AA-BB-CC-DD-EE-FF"，无 MAC 时为空
-	IfType       string // 见 IfType* 常量
-	OperStatus   string // 见 OperStatus* 常量
-	AdminEnabled bool   // 是否未被设备管理器禁用
-	IsVirtual    bool   // 虚拟网卡识别结果
-	VirtualKind  string // 见 Virtual* 常量，非虚拟时为空
-	IPv4         []Addr
-	IPv6         []Addr
-	Gateways     []string // IPv4 默认网关（FirstGatewayAddress + 注册表兜底）
+	Index          uint32
+	ID             string // 接口 GUID 或禁用设备实例 ID，用于稳定关联。
+	Name           string // FriendlyName，如 "以太网"
+	Description    string // 硬件描述，如 "Realtek PCIe GbE Family Controller"
+	MAC            string // "AA-BB-CC-DD-EE-FF"，无 MAC 时为空
+	IfType         string // 见 IfType* 常量
+	OperStatus     string // 见 OperStatus* 常量
+	AdminEnabled   bool   // 接口管理启用状态，不推断一定由设备管理器禁用。
+	AdminKnown     bool   // 是否已读取管理状态，未知不得伪装成已禁用。
+	AddressMissing bool   // 地址 API 未返回该接口；空 IP/网关/DNS 不证明未配置。
+	IsVirtual      bool   // 虚拟网卡识别结果
+	VirtualKind    string // 见 Virtual* 常量，非虚拟时为空
+	IPv4           []Addr
+	IPv6           []Addr
+	Gateways       []string // IPv4 默认网关（FirstGatewayAddress + 注册表兜底）
 	// GatewaysV6 是 IPv6 默认网关，仅供报告展示与「是否存在默认路由」判断。
 	// 必须与 Gateways 分开：混进去会让只支持 IPv4 的 ICMP 探测失败并误报 R-19；
 	// 整条丢弃又会让仅 IPv6 的机器被 R-02 误判为「无网关配置」。
@@ -120,19 +124,20 @@ type Adapter struct {
 	DNS         []string // DNS 服务器（FirstDnsServerAddress + 注册表兜底）
 	DNSSource   string   // 见 DNSSource* 常量
 	DHCPEnabled bool
-	DHCPKnown   bool // 是否成功判定 DHCP 状态（注册表不可读时为 false）
+	DHCPKnown   bool // 地址 API 是否提供 DHCP 状态；仅接口清单时为 false。
 }
 
 // IsActive 报告链路是否已建立（R-01/R-02/R-03 的第一道门槛）。
 func (a Adapter) IsActive() bool {
-	return a.OperStatus == OperStatusUp
+	return a.OperStatus == OperStatusUp && (!a.AdminKnown || a.AdminEnabled)
 }
 
 // HasUsableIPv4 报告该网卡上是否存在「可用于对外通信」的 IPv4 地址：
 // 非 APIPA（DHCP 失败产物）且非回环。该定义使 R-01 与 R-05 不会互相矛盾。
 func (a Adapter) HasUsableIPv4() bool {
 	for _, addr := range a.IPv4 {
-		if addr.IsAPIPA() || addr.IsLoopback() {
+		ip := net.ParseIP(addr.IP)
+		if ip == nil || ip.To4() == nil || ip.IsUnspecified() || ip.IsMulticast() || addr.IsAPIPA() || addr.IsLoopback() {
 			continue
 		}
 		return true

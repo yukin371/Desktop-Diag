@@ -1,5 +1,6 @@
 //go:build windows
 
+// Defines Windows SDK layouts and constants for address and ICMP APIs.
 package winapi
 
 import "golang.org/x/sys/windows"

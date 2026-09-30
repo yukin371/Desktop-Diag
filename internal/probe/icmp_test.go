@@ -64,7 +64,7 @@ func TestICMPLoopback(t *testing.T) {
 	if res.Duration <= 0 {
 		t.Errorf("Duration = %v，期望大于 0", res.Duration)
 	}
-	if res.Err != "" {
+	if !res.Incomplete && res.Err != "" {
 		t.Errorf("成功的探测不应带 Err，实际 %q", res.Err)
 	}
 	t.Logf("回环探测：Sent=%d Recv=%d Loss=%.1f%% Min=%v Avg=%v Max=%v 总耗时=%v",
@@ -232,7 +232,7 @@ func TestICMPTimeoutClassification(t *testing.T) {
 		if res.Success {
 			t.Error("不可路由目标不应 Success=true")
 		}
-		if res.Err != "" {
+		if !res.Incomplete && res.Err != "" {
 			t.Errorf("无回包是正常结果，不应写 Err，实际 %q", res.Err)
 		}
 		return

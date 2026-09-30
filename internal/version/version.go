@@ -23,7 +23,7 @@ var (
 
 // String 返回单行版本描述，供控制台与报告头使用。
 func String() string {
-	return fmt.Sprintf("Desktop-Diag %s (commit %s, built %s, %s/%s, %s)",
+	return fmt.Sprintf("Desktop-Diag %s（提交 %s，构建时间 %s，%s/%s，%s）",
 		Version, Commit, BuildTime, runtime.GOOS, runtime.GOARCH, runtime.Version())
 }
 

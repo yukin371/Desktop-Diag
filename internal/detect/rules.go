@@ -1,3 +1,4 @@
+// 本文件按完整采集证据执行诊断规则，告警措辞限定目标、协议与采样窗口。
 package detect
 
 import (
@@ -11,6 +12,7 @@ import (
 // 本文件按基线 6.2 节的规则表实现 R-01 … R-19。
 // register 里的 Condition 必须与实际实现一致：阶段 6 直接把它渲染成规则文档。
 
+// init registers built-in rules in deterministic evaluation order.
 func init() {
 	register(ruleEntry{
 		ID:        "R-01",
@@ -73,7 +75,7 @@ func init() {
 		ID:        "R-08",
 		Severity:  model.SevSevere,
 		Category:  model.CatSystem,
-		Title:     "CPU 持续满载，系统响应严重迟缓",
+		Title:     "CPU 采样窗口内占用严重偏高",
 		Condition: fmt.Sprintf("CPU 占用率 ≥ %.0f%%", CPUSeverePercent),
 		Fn:        ruleCPUSevere,
 	})
@@ -123,15 +125,15 @@ func init() {
 		ID:        "R-14",
 		Severity:  model.SevSevere,
 		Category:  model.CatNetwork,
-		Title:     "无法连通网关，内网链路中断",
-		Condition: "网关 ICMP 丢包率 = 100%，且公网 TCP 443 全部目标均不可达",
+		Title:     "网关及上层探测均无响应，疑似链路或出口策略异常",
+		Condition: "网关、系统/直连 DNS 和全部 TCP 候选均已完成失败，没有任何上层成功证据",
 		Fn:        ruleGatewayUnreachable,
 	})
 	register(ruleEntry{
 		ID:        "R-15",
 		Severity:  model.SevSevere,
 		Category:  model.CatNetwork,
-		Title:     "本机 DNS 服务不可用，网页无法正常访问（外网链路正常）",
+		Title:     "系统 DNS 无法解析测试域名，直连 DNS 正常",
 		Condition: "系统 DNS 解析 " + DNSProbeDomain + " 失败，但直连 " + DNSDirectResolver + " 解析成功",
 		Fn:        ruleLocalDNSBroken,
 	})
@@ -139,23 +141,23 @@ func init() {
 		ID:        "R-16",
 		Severity:  model.SevSevere,
 		Category:  model.CatNetwork,
-		Title:     "DNS 解析能力完全不可用，外网访问中断",
-		Condition: "直连 " + DNSDirectResolver + " 解析 " + DNSProbeDomain + " 也失败",
+		Title:     "系统与直连 DNS 均无法解析测试域名",
+		Condition: "系统和直连 " + DNSDirectResolver + " 解析 " + DNSProbeDomain + " 均已完成且失败",
 		Fn:        ruleDNSAllBroken,
 	})
 	register(ruleEntry{
 		ID:        "R-17",
 		Severity:  model.SevSevere,
 		Category:  model.CatNetwork,
-		Title:     "外网访问中断（内网链路正常），疑似出口或防火墙策略问题",
-		Condition: "公网 TCP 443 全部目标连接失败，且网关探测未失败（网关可达或无可探测网关）",
+		Title:     "公网 TCP 443 候选直连失败，已探测网关可达",
+		Condition: "全部公网 TCP 443 候选均已完成失败，并有网关成功响应证据",
 		Fn:        ruleWANPortBlocked,
 	})
 	register(ruleEntry{
 		ID:        "R-18",
 		Severity:  model.SevWarning,
 		Category:  model.CatNetwork,
-		Title:     "网关探测异常但外网可达，疑似 ICMP 被防火墙拦截（非真实故障）",
+		Title:     "网关 ICMP 无响应，但公网 TCP 目标可达",
 		Condition: "网关 ICMP 丢包率 = 100%，但任一公网 TCP 443 目标可达",
 		Fn:        ruleICMPFiltered,
 	})
@@ -173,9 +175,10 @@ func init() {
 	})
 }
 
+// ruleAPIPA flags automatic IPv4 addresses on active physical adapters.
 func ruleAPIPA(s *model.Snapshot) []model.Issue {
 	var out []model.Issue
-	for _, a := range s.ActivePhysicalAdapters() {
+	for _, a := range configurationAdapters(s) {
 		var bad []string
 		for _, addr := range a.IPv4 {
 			if addr.IsAPIPA() {
@@ -203,9 +206,10 @@ func ruleAPIPA(s *model.Snapshot) []model.Issue {
 	return out
 }
 
+// ruleNoGateway flags missing default routes while accepting IPv6 gateways.
 func ruleNoGateway(s *model.Snapshot) []model.Issue {
 	var out []model.Issue
-	for _, a := range s.ActivePhysicalAdapters() {
+	for _, a := range configurationAdapters(s) {
 		if a.HasGateway() {
 			continue
 		}
@@ -228,9 +232,10 @@ func ruleNoGateway(s *model.Snapshot) []model.Issue {
 	return out
 }
 
+// ruleNoDNS flags known empty DNS configuration, excluding missing evidence.
 func ruleNoDNS(s *model.Snapshot) []model.Issue {
 	var out []model.Issue
-	for _, a := range s.ActivePhysicalAdapters() {
+	for _, a := range configurationAdapters(s) {
 		if a.HasDNS() {
 			continue
 		}
@@ -258,9 +263,10 @@ func ruleNoDNS(s *model.Snapshot) []model.Issue {
 	return out
 }
 
+// ruleInvalidDNS flags only unspecified DNS placeholders; local proxies are legal.
 func ruleInvalidDNS(s *model.Snapshot) []model.Issue {
 	var out []model.Issue
-	for _, a := range s.ActivePhysicalAdapters() {
+	for _, a := range configurationAdapters(s) {
 		if !AllDNSInvalid(a.DNS) {
 			continue
 		}
@@ -282,12 +288,13 @@ func ruleInvalidDNS(s *model.Snapshot) []model.Issue {
 	return out
 }
 
+// ruleIPv6OnlyLinkLocal flags link-local-only IPv6 without usable IPv4.
 func ruleIPv6OnlyLinkLocal(s *model.Snapshot) []model.Issue {
 	if !s.IPv6OnlyLinkLocal() {
 		return nil
 	}
 	var addrs []string
-	for _, a := range s.ActivePhysicalAdapters() {
+	for _, a := range configurationAdapters(s) {
 		for _, v6 := range a.IPv6 {
 			addrs = append(addrs, fmt.Sprintf("%s（%s %s）", v6.IP, a.DisplayName(), v6.Scope))
 		}
@@ -306,6 +313,7 @@ func ruleIPv6OnlyLinkLocal(s *model.Snapshot) []model.Issue {
 	}}
 }
 
+// ruleMemSevere applies the severe threshold to known memory samples.
 func ruleMemSevere(s *model.Snapshot) []model.Issue {
 	if !s.Health.MemKnown || s.Health.MemUsedPercent < MemSeverePercent {
 		return nil
@@ -315,6 +323,7 @@ func ruleMemSevere(s *model.Snapshot) []model.Issue {
 		"内存占用率已达到严重档，新启动的程序很可能申请不到内存。")}
 }
 
+// ruleMemWarn applies the warning band without duplicating severe findings.
 func ruleMemWarn(s *model.Snapshot) []model.Issue {
 	if !s.Health.MemKnown || s.Health.MemUsedPercent < MemWarnPercent || s.Health.MemUsedPercent >= MemSeverePercent {
 		return nil
@@ -324,6 +333,7 @@ func ruleMemWarn(s *model.Snapshot) []model.Issue {
 		"内存占用率偏高，尚未达到严重档，但已足以影响交互流畅度。")}
 }
 
+// memIssue builds the memory finding with measured usage and threshold evidence.
 func memIssue(s *model.Snapshot, id string, sev model.Severity, title, detail string) model.Issue {
 	h := s.Health
 	return model.Issue{
@@ -342,15 +352,17 @@ func memIssue(s *model.Snapshot, id string, sev model.Severity, title, detail st
 	}
 }
 
+// ruleCPUSevere checks the severe threshold for the short CPU sampling window.
 func ruleCPUSevere(s *model.Snapshot) []model.Issue {
 	if !s.Health.CPUKnown || s.Health.CPUPercent < CPUSeverePercent {
 		return nil
 	}
 	return []model.Issue{cpuIssue(s, "R-08", model.SevSevere,
-		"CPU 持续满载，系统响应严重迟缓",
-		"采样窗口内 CPU 几乎全程繁忙，系统会明显卡顿甚至无响应。")}
+		"CPU 采样窗口内占用严重偏高",
+		"本次采样窗口内 CPU 繁忙，可能影响响应；单次采样不证明长期持续满载。")}
 }
 
+// ruleCPUWarn checks the CPU warning band without duplicating severe findings.
 func ruleCPUWarn(s *model.Snapshot) []model.Issue {
 	if !s.Health.CPUKnown || s.Health.CPUPercent < CPUWarnPercent || s.Health.CPUPercent >= CPUSeverePercent {
 		return nil
@@ -360,6 +372,7 @@ func ruleCPUWarn(s *model.Snapshot) []model.Issue {
 		"采样窗口内 CPU 占用率偏高，尚未达到满载。")}
 }
 
+// cpuIssue states the CPU sampling window rather than inferring sustained load.
 func cpuIssue(s *model.Snapshot, id string, sev model.Severity, title, detail string) model.Issue {
 	return model.Issue{
 		RuleID:   id,
@@ -376,6 +389,7 @@ func cpuIssue(s *model.Snapshot, id string, sev model.Severity, title, detail st
 	}
 }
 
+// ruleDiskWarn checks known system-volume free space against the warning band.
 func ruleDiskWarn(s *model.Snapshot) []model.Issue {
 	h := s.Health
 	if !h.DiskKnown || h.DiskFreeBytes < DiskSevereFreeBytes || h.DiskFreeBytes >= DiskWarnFreeBytes {
@@ -385,6 +399,7 @@ func ruleDiskWarn(s *model.Snapshot) []model.Issue {
 		"系统盘空间不足，存在系统卡顿、更新失败风险")}
 }
 
+// ruleDiskSevere checks known system-volume free space against the severe threshold.
 func ruleDiskSevere(s *model.Snapshot) []model.Issue {
 	h := s.Health
 	if !h.DiskKnown || h.DiskFreeBytes >= DiskSevereFreeBytes {
@@ -394,6 +409,7 @@ func ruleDiskSevere(s *model.Snapshot) []model.Issue {
 		"系统盘空间严重不足，存在系统异常与更新失败高风险")}
 }
 
+// diskIssue combines system-volume identity, usage and free-space evidence.
 func diskIssue(s *model.Snapshot, id string, sev model.Severity, title string) model.Issue {
 	h := s.Health
 	usedPct := 0.0
@@ -423,7 +439,7 @@ func diskIssue(s *model.Snapshot, id string, sev model.Severity, title string) m
 func gatewayProbes(s *model.Snapshot) []model.ProbeResult {
 	var out []model.ProbeResult
 	for _, p := range s.FindProbes(model.ProbeICMPGateway) {
-		if p.Skipped || p.Sent == 0 {
+		if !p.Executed() || p.Incomplete {
 			continue
 		}
 		out = append(out, p)
@@ -441,6 +457,7 @@ func gatewayFailed(s *model.Snapshot) bool {
 	return false
 }
 
+// tcpProbes returns TCP records that were not explicitly skipped.
 func tcpProbes(s *model.Snapshot) []model.ProbeResult {
 	var out []model.ProbeResult
 	for _, p := range s.FindProbes(model.ProbeTCP443) {
@@ -452,19 +469,14 @@ func tcpProbes(s *model.Snapshot) []model.ProbeResult {
 	return out
 }
 
+// allTCPFailed requires completed failures for every configured candidate.
 func allTCPFailed(s *model.Snapshot) bool {
-	probes := tcpProbes(s)
-	if len(probes) == 0 {
-		return false
-	}
-	for _, p := range probes {
-		if p.Success {
-			return false
-		}
-	}
-	return true
+	// evidence 必须覆盖全部固定目标，不能用一条失败冒充全部候选失败。
+	evidence := model.AssessProbes(s.Probes, model.ProbeTCP443, TCP443Targets)
+	return evidence.Complete && !evidence.Success
 }
 
+// anyTCPSuccess reports actual successful TCP evidence.
 func anyTCPSuccess(s *model.Snapshot) bool {
 	for _, p := range tcpProbes(s) {
 		if p.Success {
@@ -476,14 +488,23 @@ func anyTCPSuccess(s *model.Snapshot) bool {
 
 // executed 报告某类探测是否真的跑过（存在非 Skipped 的结果）。
 func executed(s *model.Snapshot, kind model.ProbeKind) (model.ProbeResult, bool) {
+	// first 保留失败证据；有完整成功时优先返回成功，避免首条失败掩盖后续成功。
+	var first model.ProbeResult
+	found := false
 	for _, p := range s.FindProbes(kind) {
-		if !p.Skipped {
-			return p, true
+		if p.Executed() && !p.Incomplete {
+			if p.Success {
+				return p, true
+			}
+			if !found {
+				first, found = p, true
+			}
 		}
 	}
-	return model.ProbeResult{}, false
+	return first, found
 }
 
+// ruleGatewayLoss reports partial loss only for complete ICMP samples.
 func ruleGatewayLoss(s *model.Snapshot) []model.Issue {
 	var out []model.Issue
 	for _, p := range gatewayProbes(s) {
@@ -511,6 +532,7 @@ func ruleGatewayLoss(s *model.Snapshot) []model.Issue {
 	return out
 }
 
+// ruleGatewayLatency checks average RTT only when replies were received.
 func ruleGatewayLatency(s *model.Snapshot) []model.Issue {
 	var out []model.Issue
 	for _, p := range gatewayProbes(s) {
@@ -540,7 +562,15 @@ func ruleGatewayLatency(s *model.Snapshot) []model.Issue {
 	return out
 }
 
+// ruleGatewayUnreachable requires complete failures across all required protocols.
 func ruleGatewayUnreachable(s *model.Snapshot) []model.Issue {
+	// gateway/system/direct 必须都有完整失败证据；其他接口或上层成功时不宣称整体链路中断。
+	gateway := model.AssessProbes(s.Probes, model.ProbeICMPGateway, nil)
+	system := model.AssessProbes(s.Probes, model.ProbeDNSSystem, nil)
+	direct := model.AssessProbes(s.Probes, model.ProbeDNSDirect, nil)
+	if !gateway.Complete || gateway.Success || !system.Complete || system.Success || !direct.Complete || direct.Success || !allTCPFailed(s) {
+		return nil
+	}
 	var out []model.Issue
 	for _, p := range gatewayProbes(s) {
 		if p.Recv != 0 {
@@ -555,9 +585,9 @@ func ruleGatewayUnreachable(s *model.Snapshot) []model.Issue {
 			RuleID:   "R-14",
 			Severity: model.SevSevere,
 			Category: model.CatNetwork,
-			Title:    "无法连通网关，内网链路中断",
+			Title:    "网关及上层探测均无响应，疑似链路或出口策略异常",
 			Detail: fmt.Sprintf("发往网关 %s 的 %d 个回显请求全部没有得到应答，"+
-				"且公网 443 也全部不可达，本机与内网的连通性已中断。", p.Target, p.Sent),
+				"系统/直连 DNS 和全部公网 443 候选也均已执行失败，可能为链路、出口策略或目标服务问题。", p.Target, p.Sent),
 			Evidence: []string{
 				"探测网卡：" + p.AdapterName,
 				"目标：" + p.Target,
@@ -571,19 +601,22 @@ func ruleGatewayUnreachable(s *model.Snapshot) []model.Issue {
 	return out
 }
 
+// ruleLocalDNSBroken compares failed system resolution with successful direct resolution.
 func ruleLocalDNSBroken(s *model.Snapshot) []model.Issue {
+	systemEvidence := model.AssessProbes(s.Probes, model.ProbeDNSSystem, nil)
+	directEvidence := model.AssessProbes(s.Probes, model.ProbeDNSDirect, nil)
 	sys, okSys := executed(s, model.ProbeDNSSystem)
 	direct, okDirect := executed(s, model.ProbeDNSDirect)
-	if !okSys || sys.Success || !okDirect || !direct.Success {
+	if !systemEvidence.Complete || systemEvidence.Success || !directEvidence.Success || !okSys || !okDirect || !direct.Success {
 		return nil
 	}
 	return []model.Issue{{
 		RuleID:   "R-15",
 		Severity: model.SevSevere,
 		Category: model.CatNetwork,
-		Title:    "本机 DNS 服务不可用，网页无法正常访问（外网链路正常）",
-		Detail: "用本机配置的 DNS 解析域名全部失败，而绕过本机配置、直连公共 DNS " +
-			"却解析成功。这说明**外网链路是通的**，问题出在本机的 DNS 配置或 DNS 客户端服务上。",
+		Title:    "系统 DNS 无法解析测试域名，直连 DNS 正常",
+		Detail: "系统解析器无法解析本次测试域名，而直连公共 DNS 成功。" +
+			"该差异可能来自 DNS 配置、服务或企业策略，不证明其他域名或全部外网均不可用。",
 		Evidence: []string{
 			fmt.Sprintf("探测域名：%s", DNSProbeDomain),
 			fmt.Sprintf("系统 DNS 解析：失败（%s）", orNone(sys.Err)),
@@ -595,20 +628,25 @@ func ruleLocalDNSBroken(s *model.Snapshot) []model.Issue {
 	}}
 }
 
+// ruleDNSAllBroken requires complete failures from both DNS paths.
 func ruleDNSAllBroken(s *model.Snapshot) []model.Issue {
+	systemEvidence := model.AssessProbes(s.Probes, model.ProbeDNSSystem, nil)
+	directEvidence := model.AssessProbes(s.Probes, model.ProbeDNSDirect, nil)
+	// system 是不可缺少的对照证据，公共 DNS 不可用不代表企业 DNS 故障。
+	system, okSystem := executed(s, model.ProbeDNSSystem)
 	direct, ok := executed(s, model.ProbeDNSDirect)
-	if !ok || direct.Success {
+	if !systemEvidence.Complete || systemEvidence.Success || !directEvidence.Complete || directEvidence.Success || !okSystem || !ok {
 		return nil
 	}
 	return []model.Issue{{
 		RuleID:   "R-16",
 		Severity: model.SevSevere,
 		Category: model.CatNetwork,
-		Title:    "DNS 解析能力完全不可用，外网访问中断",
-		Detail: "连绕过本机配置、直连公共 DNS 的解析也失败了，" +
-			"说明本机当前的域名解析能力完全不可用。",
+		Title:    "系统与直连 DNS 均无法解析测试域名",
+		Detail:   "本次固定域名在系统与公共解析器均解析失败；需结合 TCP 证据检查解析策略或目标域名，不能据此断言全部互联网不可用。",
 		Evidence: []string{
 			fmt.Sprintf("探测域名：%s", DNSProbeDomain),
+			fmt.Sprintf("系统 DNS 解析：失败（%s）", orNone(system.Err)),
 			fmt.Sprintf("直连 %s 解析：失败（%s）", DNSDirectResolver, orNone(direct.Err)),
 		},
 		Suggestion: "先确认基础连通性（网关与公网 443 是否可达）；" +
@@ -616,14 +654,14 @@ func ruleDNSAllBroken(s *model.Snapshot) []model.Issue {
 	}}
 }
 
+// ruleWANPortBlocked requires all TCP candidates failed and an observed reachable gateway.
 func ruleWANPortBlocked(s *model.Snapshot) []model.Issue {
-	if !allTCPFailed(s) {
+	// gateway 需要实际成功证据，空列表或跳过不能说明内网正常。
+	gateway := model.AssessProbes(s.Probes, model.ProbeICMPGateway, nil)
+	if !allTCPFailed(s) || !gateway.Complete || !gateway.Success {
 		return nil
 	}
-	// 网关确实不通时不报本条：R-14 已给出更准确的结论，再说「内网正常、外网中断」自相矛盾。
-	if gatewayFailed(s) {
-		return nil
-	}
+	// 成功只证明至少一个网关，不代表其他接口或所有互联网目标可用。
 	var ev []string
 	for _, p := range tcpProbes(s) {
 		ev = append(ev, fmt.Sprintf("%s → 失败（%s）", p.Target, orNone(p.Err)))
@@ -632,9 +670,9 @@ func ruleWANPortBlocked(s *model.Snapshot) []model.Issue {
 		RuleID:   "R-17",
 		Severity: model.SevSevere,
 		Category: model.CatNetwork,
-		Title:    "外网访问中断（内网链路正常），疑似出口或防火墙策略问题",
-		Detail: fmt.Sprintf("全部 %d 个公网 443 目标都无法建立连接，而网关探测未失败。"+
-			"这说明本机到内网的链路是好的，问题出在内网出口或出口策略上。", len(ev)),
+		Title:    "公网 TCP 443 候选直连失败，已探测网关可达",
+		Detail: fmt.Sprintf("全部 %d 个固定公网 443 候选直连均失败，且至少一个已探测网关可达。"+
+			"结果只针对这些候选；企业代理要求、出口策略和目标服务状态都可能造成差异。", len(ev)),
 		Evidence: model.NormalizeEvidence(append([]string{
 			"探测目标（直连，不走系统代理）：",
 		}, ev...)),
@@ -643,6 +681,7 @@ func ruleWANPortBlocked(s *model.Snapshot) []model.Issue {
 	}}
 }
 
+// ruleICMPFiltered explains unresponsive gateway ICMP when global TCP evidence succeeds.
 func ruleICMPFiltered(s *model.Snapshot) []model.Issue {
 	if !gatewayFailed(s) || !anyTCPSuccess(s) {
 		return nil
@@ -662,14 +701,15 @@ func ruleICMPFiltered(s *model.Snapshot) []model.Issue {
 		RuleID:   "R-18",
 		Severity: model.SevWarning,
 		Category: model.CatNetwork,
-		Title:    "网关探测异常但外网可达，疑似 ICMP 被防火墙拦截（非真实故障）",
-		Detail: "网关不回 ICMP 回显请求，但公网 443 可以连通，" +
-			"说明内网其实是通的，只是 ICMP 协议被安全设备或防火墙策略拦截了。**这不是断网**。",
+		Title:    "网关 ICMP 无响应，但公网 TCP 目标可达",
+		Detail: "至少一个公网 TCP 候选可达，网关 ICMP 未获响应，可能受 ICMP 策略影响。" +
+			"实际出接口由系统路由决定，不能据此证明每块无响应网卡都能正常联网。",
 		Evidence:   ev,
-		Suggestion: "无需处理。若需让网关探测也正常，请让网络管理员放行 ICMP 回显请求。",
+		Suggestion: "核对出接口与企业 ICMP 策略；若某一网卡持续异常，请单独检查该接口的链路与路由。",
 	}}
 }
 
+// rulePartialData aggregates missing evidence after other rules finish.
 func rulePartialData(s *model.Snapshot) []model.Issue {
 	if len(s.Failures) == 0 {
 		return nil
@@ -714,6 +754,7 @@ func formatGiB(b uint64) string {
 	return fmt.Sprintf("%.2f GB", float64(b)/float64(gib))
 }
 
+// joinOrNone renders an explicit placeholder for an empty evidence list.
 func joinOrNone(items []string) string {
 	if len(items) == 0 {
 		return "(无)"
@@ -721,6 +762,7 @@ func joinOrNone(items []string) string {
 	return strings.Join(items, ", ")
 }
 
+// orNone preserves nonempty text and marks missing evidence explicitly.
 func orNone(s string) string {
 	if strings.TrimSpace(s) == "" {
 		return "(无)"
@@ -728,10 +770,22 @@ func orNone(s string) string {
 	return s
 }
 
+// collectDNSList gathers configured DNS addresses on active physical interfaces.
 func collectDNSList(s *model.Snapshot) []string {
 	var out []string
-	for _, a := range s.ActivePhysicalAdapters() {
+	for _, a := range configurationAdapters(s) {
 		out = append(out, a.DNS...)
 	}
 	return out
+}
+
+// configurationAdapters excludes inventory-only rows whose empty configuration is not evidence.
+func configurationAdapters(s *model.Snapshot) []model.Adapter {
+	var adapters []model.Adapter
+	for _, a := range s.ActivePhysicalAdapters() {
+		if !a.AddressMissing {
+			adapters = append(adapters, a)
+		}
+	}
+	return adapters
 }

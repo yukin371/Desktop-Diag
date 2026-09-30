@@ -1,3 +1,4 @@
+// Defines rule identities, severities and deterministic registration metadata.
 package detect
 
 import (
@@ -35,6 +36,7 @@ type ruleEntry struct {
 // 用显式注册而不是散在 init() 里，是为了让注册表本身可被元测试与文档生成消费。
 var catalog []ruleEntry
 
+// register adds a built-in rule with its stable identity and execution order.
 func register(e ruleEntry) {
 	catalog = append(catalog, e)
 }

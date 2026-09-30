@@ -1,5 +1,6 @@
 //go:build windows
 
+// Writes exclusive report files with encoding normalization and directory fallback.
 package report
 
 import (
@@ -37,6 +38,9 @@ const (
 	// probeTempPattern 用点前缀隐藏探针文件，且不会与 diag_*.txt 混淆。
 	probeTempPattern = ".desktop-diag-write-probe-*"
 )
+
+// errReportCleanup 阻止遗留不完整报告后继续降级并返回成功。
+var errReportCleanup = errors.New("不完整报告清理失败")
 
 // ReportFileName 返回给定时刻对应的报告文件名（未做撞名检查）。
 func ReportFileName(t time.Time) string {
@@ -162,7 +166,7 @@ func ErrorString(attempts []Attempt) string {
 		if strings.TrimSpace(dir) == "" {
 			dir = "(不可用)"
 		}
-		fmt.Fprintf(&sb, "  [%d/4] %s (%s): %s\n", a.Level, a.Label, dir, a.Reason)
+		fmt.Fprintf(&sb, "  [%d/4] %s (%s): %s\n", a.Level, a.Label, dir, model.ChineseReason(a.Reason))
 	}
 	sb.WriteString("  提示: 请用 -o 指定一个可写目录后重试。")
 	return sb.String()
@@ -179,6 +183,11 @@ type Writer struct {
 	Writers []func(w io.Writer) error
 	// Now 是文件名时间源，零值时使用 time.Now()。测试可注入固定时刻。
 	Now func() time.Time
+	// StartedAt 非零时在正文写入后记录包含落盘的耗时；控制台另计关闭后的总耗时。
+	StartedAt time.Time
+	// reserve/remove 为局部文件依赖，用于验证关闭、短写与清理失败。
+	reserve func(string, string) (io.WriteCloser, string, error)
+	remove  func(string) error
 }
 
 // now 返回文件名使用的时间。
@@ -243,6 +252,8 @@ func (wr Writer) Write(snap *model.Snapshot, issues []model.Issue, cands []Candi
 	snap = snapsOf(snap)
 
 	attempts := make([]Attempt, 0, len(cands))
+	// causes 保留底层错误链，路径说明不能取代可检查的原始错误。
+	var causes error
 	// 只有「更高级别的候选确实尝试过且失败」才叫降级。
 	sawHigherFailure := false
 	// level1Present 记录「用户是否传了 -o」：没传时第 ① 级根本不在候选链上。
@@ -264,6 +275,7 @@ func (wr Writer) Write(snap *model.Snapshot, issues []model.Issue, cands []Candi
 		// 只有确定要往这一级写，才创建目录 —— 「探测不留垃圾」的原则同样适用于
 		// 「不要在不打算用的地方留下空目录」。
 		if err := os.MkdirAll(c.Dir, 0o755); err != nil {
+			causes = errors.Join(causes, fmt.Errorf("创建报告目录 %s 失败: %w", c.Dir, err))
 			attempts = append(attempts, Attempt{
 				Level: c.Level, Label: c.Label, Dir: c.Dir,
 				Reason: "创建目录失败: " + err.Error(),
@@ -282,11 +294,15 @@ func (wr Writer) Write(snap *model.Snapshot, issues []model.Issue, cands []Candi
 
 		path, err := wr.writeToDir(c, snap, issues, degraded, reason)
 		if err != nil {
+			causes = errors.Join(causes, err)
 			attempts = append(attempts, Attempt{
 				Level: c.Level, Label: c.Label, Dir: c.Dir,
 				Reason: writeFailureReason(err),
 			})
 			sawHigherFailure = true
+			if errors.Is(err, errReportCleanup) {
+				return Outcome{Attempts: attempts}, fmt.Errorf("报告写入失败且不完整文件无法清理，已停止降级；请检查上述文件路径: %w", causes)
+			}
 			continue
 		}
 
@@ -309,7 +325,7 @@ func (wr Writer) Write(snap *model.Snapshot, issues []model.Issue, cands []Candi
 		return out, nil
 	}
 
-	return Outcome{Attempts: attempts}, errors.New(ErrorString(attempts))
+	return Outcome{Attempts: attempts}, errors.Join(errors.New(ErrorString(attempts)), causes)
 }
 
 // snapsOf 让 nil 快照在调用链上尽早归一，避免每处都写一遍判空。
@@ -348,7 +364,16 @@ func candidateUnusable(c Candidate) (string, bool) {
 // 必须先占位：报告头要写实际落盘路径（REQ-F-506），而文件名只有 O_EXCL
 // 成功后才确定。任何一步失败都删除占位文件 —— 半截报告会被当成「机器没问题」。
 func (wr Writer) writeToDir(c Candidate, snap *model.Snapshot, issues []model.Issue, degraded bool, reason string) (string, error) {
-	f, full, err := reserveReportFile(c.Dir, ReportFileName(wr.now()))
+	// reserve 默认为唯一报告创建，生产路径不会生成探针或临时文件。
+	reserve := wr.reserve
+	if reserve == nil {
+		reserve = func(dir, name string) (io.WriteCloser, string, error) { return reserveReportFile(dir, name) }
+	}
+	remove := wr.remove
+	if remove == nil {
+		remove = os.Remove
+	}
+	f, full, err := reserve(c.Dir, ReportFileName(wr.now()))
 	if err != nil {
 		return "", err
 	}
@@ -357,13 +382,13 @@ func (wr Writer) writeToDir(c Candidate, snap *model.Snapshot, issues []model.Is
 		full = abs
 	}
 
-	// 清理失败不改变对外结果，只记录原始失败原因。
+	// 合并清理失败，避免用户误以为没有残留不完整报告。
 	fail := func(cause error) (string, error) {
 		if cerr := f.Close(); cerr != nil {
 			cause = errors.Join(cause, fmt.Errorf("关闭占位文件失败: %w", cerr))
 		}
-		if rerr := os.Remove(full); rerr != nil {
-			cause = errors.Join(cause, fmt.Errorf("删除占位文件 %s 失败: %w", full, rerr))
+		if rerr := remove(full); rerr != nil {
+			cause = errors.Join(cause, fmt.Errorf("删除占位文件 %s 失败: %w", full, errors.Join(errReportCleanup, rerr)))
 		}
 		return "", cause
 	}
@@ -378,12 +403,23 @@ func (wr Writer) writeToDir(c Candidate, snap *model.Snapshot, issues []model.Is
 		return fail(fmt.Errorf("渲染报告内容失败: %w", err))
 	}
 
-	if _, err := f.Write(content); err != nil {
-		return fail(err)
+	if n, err := f.Write(content); err != nil || n != len(content) {
+		if err == nil {
+			err = io.ErrShortWrite
+		}
+		return fail(fmt.Errorf("写入报告 %s 失败: %w", full, err))
+	}
+	if !wr.StartedAt.IsZero() {
+		if _, err := WriteCRLF(f, fmt.Sprintf("总耗时（截至报告正文写入，不含关闭）：%s\n", wr.now().Sub(wr.StartedAt).Round(time.Millisecond))); err != nil {
+			return fail(fmt.Errorf("写入报告耗时失败: %w", err))
+		}
 	}
 	if err := f.Close(); err != nil {
-		_ = os.Remove(full)
-		return "", err
+		cause := fmt.Errorf("关闭报告 %s 失败: %w", full, err)
+		if removeErr := remove(full); removeErr != nil {
+			cause = errors.Join(cause, fmt.Errorf("删除不完整报告 %s 失败: %w", full, errors.Join(errReportCleanup, removeErr)))
+		}
+		return "", cause
 	}
 	return full, nil
 }
@@ -468,7 +504,7 @@ func degradeReason(attempts []Attempt) string {
 		return "未说明"
 	}
 	last := failed[len(failed)-1]
-	return fmt.Sprintf("%s 不可用（%s）", last.Label, last.Reason)
+	return fmt.Sprintf("%s 不可用（%s）", last.Label, model.ChineseReason(last.Reason))
 }
 
 // EnsureWritable 探测 dir 是否可写，必要时创建它。

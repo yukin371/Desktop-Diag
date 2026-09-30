@@ -1,5 +1,6 @@
 //go:build windows
 
+// Collects short CPU samples, physical memory and the Windows system volume.
 package collect
 
 import (
@@ -37,10 +38,8 @@ func (c healthCollector) Collect(ctx context.Context, snap *model.Snapshot) erro
 		partial = append(partial, "系统盘: "+err.Error())
 	}
 	if err := collectCPU(ctx, snap); err != nil {
-		// 上下文被取消（例如用户 Ctrl+C）不算采集缺陷，不要污染诊断完整性。
-		if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
-			partial = append(partial, "CPU: "+err.Error())
-		}
+		// 取消留下真实缺失项，不得把未完成 CPU 采样展示为正常零占用。
+		partial = append(partial, "CPU: "+err.Error())
 	}
 
 	if len(partial) > 0 {

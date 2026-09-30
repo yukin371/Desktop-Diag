@@ -1,5 +1,6 @@
 //go:build windows
 
+// Declares shared system DLL procedures and native error normalization.
 package winapi
 
 import (

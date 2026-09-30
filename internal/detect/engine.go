@@ -1,3 +1,4 @@
+// Evaluates pure rules, isolates failures and sorts findings deterministically.
 package detect
 
 import (

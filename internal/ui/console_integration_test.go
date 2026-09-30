@@ -28,10 +28,29 @@ func TestSetupOnRealConsole(t *testing.T) {
 
 	f := os.NewFile(uintptr(h), "CONOUT$")
 	if f == nil {
-		windows.CloseHandle(h)
+		if err := windows.CloseHandle(h); err != nil {
+			t.Errorf("释放控制台句柄失败: %v", err)
+		}
 		t.Fatal("把 CONOUT$ 句柄包装成 *os.File 失败")
 	}
-	defer f.Close()
+	t.Cleanup(func() {
+		if err := f.Close(); err != nil {
+			t.Errorf("关闭控制台句柄失败: %v", err)
+		}
+	})
+	originalMode, err := winapi.GetConsoleMode(f.Fd())
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalCP := winapi.GetConsoleOutputCP()
+	t.Cleanup(func() {
+		if err := winapi.SetConsoleMode(f.Fd(), originalMode); err != nil {
+			t.Errorf("恢复测试前模式失败: %v", err)
+		}
+		if err := winapi.SetConsoleOutputCP(originalCP); err != nil {
+			t.Errorf("恢复测试前代码页失败: %v", err)
+		}
+	})
 
 	if !winapi.IsConsole(f.Fd()) {
 		t.Fatal("CONOUT$ 的句柄应被判定为控制台")
@@ -45,13 +64,22 @@ func TestSetupOnRealConsole(t *testing.T) {
 
 	// NO_COLOR 是文档化的显式覆盖，必须优先于自动探测。
 	if os.Getenv("NO_COLOR") != "" {
-		if c := Setup(f); c.Mode() != ModePlain {
+		c := Setup(f)
+		if c.Mode() != ModePlain {
 			t.Errorf("设置了 NO_COLOR 时应降级为纯文本，实际 %v", c.Mode())
+		}
+		if err := c.Close(); err != nil {
+			t.Errorf("恢复无色控制台失败: %v", err)
 		}
 		t.Setenv("NO_COLOR", "")
 	}
 
 	c := Setup(f)
+	t.Cleanup(func() {
+		if err := c.Close(); err != nil {
+			t.Errorf("恢复控制台失败: %v", err)
+		}
+	})
 	if c.Mode() != ModeColor {
 		t.Fatalf("真实控制台 + VT 可用时 Mode = %v，期望 ModeColor", c.Mode())
 	}
@@ -61,5 +89,8 @@ func TestSetupOnRealConsole(t *testing.T) {
 	}
 	if cp := winapi.GetConsoleOutputCP(); cp != winapi.CPUTF8 {
 		t.Errorf("Setup 后控制台输出代码页 = %d，期望 %d", cp, winapi.CPUTF8)
+	}
+	if err := c.Close(); err != nil {
+		t.Errorf("恢复控制台失败: %v", err)
 	}
 }

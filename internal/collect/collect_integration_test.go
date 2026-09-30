@@ -67,7 +67,7 @@ func TestIntegrationRunAllCollectors(t *testing.T) {
 		t.Error("一块网卡都没采到：GetAdaptersAddresses 的调用或解析有问题")
 	}
 	for _, a := range snap.Adapters {
-		if a.Index == 0 {
+		if a.Index == 0 && (!a.AdminKnown || a.AdminEnabled || a.ID == "") {
 			t.Errorf("网卡 %q 的 IfIndex 为 0，结构体偏移可能错位", a.DisplayName())
 		}
 		t.Logf("网卡 IfIndex=%d %q 类型=%s 状态=%s 虚拟=%v(%s) IPv4=%v 网关=%v DNS=%v",

@@ -1,5 +1,6 @@
 //go:build windows
 
+// Copies adapter address data and wraps IPv4 ICMP requests.
 package winapi
 
 import (
@@ -20,18 +21,6 @@ var (
 	procIcmpCreateFile       = iphlpapi.NewProc("IcmpCreateFile")
 	procIcmpCloseHandle      = iphlpapi.NewProc("IcmpCloseHandle")
 	procIcmpSendEcho         = iphlpapi.NewProc("IcmpSendEcho")
-)
-
-const (
-	// maxAdapterCount 是遍历网卡链表时的硬上限：底层数据异常（例如链表成环）时不能无限循环，诊断工具本身不能卡死。
-	maxAdapterCount = 512
-
-	// GetAdaptersAddresses 的推荐初始缓冲区大小（Windows 文档建议 15 KB）。
-	initialAdapterBufSize = 15 * 1024
-
-	// 缓冲区不足时的增量，并保留重试次数上限。
-	adapterBufGrowth  = 16 * 1024
-	maxAdapterRetries = 5
 )
 
 // RawAddr 是网卡地址的中立表示。
@@ -68,7 +57,12 @@ type RawAdapter struct {
 	OperStatus uint32
 	Flags      uint32
 
-	Dhcpv4Enabled bool
+	Dhcpv4Enabled     bool
+	AddressKnown      bool // 来自地址 API，DHCP 与地址字段可判定。
+	AdminKnown        bool // 已取得管理启用状态。
+	AdminEnabled      bool // 接口或设备的真实管理启用状态。
+	HardwareKnown     bool // 已读取接口硬件标志。
+	HardwareInterface bool // 是否由系统标为硬件接口。
 
 	IPv4     []RawAddr
 	IPv6     []RawAddr
@@ -157,6 +151,7 @@ func parseAdapters(buf []byte) ([]RawAdapter, error) {
 // convertAdapter 把 SDK 结构体转成中立的 RawAdapter。
 func convertAdapter(a *ipAdapterAddressesLH) RawAdapter {
 	raw := RawAdapter{
+		AddressKnown:          true,
 		IfIndex:               a.IfIndex,
 		Ipv6IfIndex:           a.Ipv6IfIndex,
 		AdapterName:           bytePtrToString(a.AdapterName),

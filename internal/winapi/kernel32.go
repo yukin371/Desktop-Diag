@@ -1,5 +1,6 @@
 //go:build windows
 
+// Wraps host, memory, disk and CPU-time Windows queries.
 package winapi
 
 import (

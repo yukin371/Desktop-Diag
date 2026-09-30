@@ -1,5 +1,6 @@
 //go:build windows
 
+// Tests fixed TCP endpoints by direct dialing without application payloads.
 package probe
 
 import (
@@ -10,11 +11,12 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/yukin371/desktop-diag/internal/detect"
 	"github.com/yukin371/desktop-diag/internal/model"
 )
 
 // defaultTCPTimeout 是未指定超时时的连接上限，与基线 TCPDialTimeout 一致。
-const defaultTCPTimeout = 3 * time.Second
+const defaultTCPTimeout = detect.TCPDialTimeout
 
 // TCPOptions 是一次 TCP 直连探测的参数。
 type TCPOptions struct {
@@ -44,7 +46,7 @@ func TCP(ctx context.Context, target string, opts TCPOptions) (model.ProbeResult
 		return model.ProbeResult{}, fmt.Errorf("TCP 探测：目标 %q 缺少主机地址", target)
 	}
 	if _, err := strconv.Atoi(port); err != nil {
-		return model.ProbeResult{}, fmt.Errorf("TCP 探测：目标 %q 的端口 %q 不是数字", target, port)
+		return model.ProbeResult{}, fmt.Errorf("TCP 探测：目标 %q 的端口 %q 不是数字: %w", target, port, err)
 	}
 
 	timeout := opts.Timeout
@@ -73,7 +75,9 @@ func TCP(ctx context.Context, target string, opts TCPOptions) (model.ProbeResult
 		return result, nil
 	}
 	// 只测握手，不发送任何数据：本工具不得向对端写入内容。
-	conn.Close()
+	if err := conn.Close(); err != nil {
+		return result, fmt.Errorf("关闭 TCP 探测连接 %s 失败: %w", target, err)
+	}
 
 	result.Success = true
 	return result, nil

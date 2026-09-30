@@ -1,5 +1,6 @@
 //go:build windows
 
+// Collects host identity, Windows version and current token elevation.
 package collect
 
 import (

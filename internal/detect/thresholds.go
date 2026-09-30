@@ -15,6 +15,13 @@ import (
 // 本文件是全项目唯一的阈值来源；规则函数内出现字面量数值即视为缺陷。
 
 const (
+	// DiagnosticTimeout/CollectionTimeout 限制总预算与采集时间，给报告写入留出余量。
+	DiagnosticTimeout = 30 * time.Second
+	CollectionTimeout = 25 * time.Second
+	// GatewayWorkers 限制网关并发，防止多网卡串行耗时线性增长。
+	GatewayWorkers = 4
+	// ICMPMaxPayload 是 Win32 长度参数可表示的最大载荷。
+	ICMPMaxPayload = 65535
 	// APIPAPrefix 是 DHCP 自动专用地址前缀，出现即表示未取得有效内网 IP；
 	// 复用 model 的定义，避免两处判定悄悄分叉。
 	APIPAPrefix = model.APIPAPrefix
@@ -67,7 +74,7 @@ const (
 
 // InvalidDNSServers 是"看起来像地址、实际无法解析域名"的占位值；
 // 它们会让 DNS 列表非空、骗过 R-03 的空列表检查，因此必须单独识别（R-04）。
-var InvalidDNSServers = []string{"0.0.0.0", "127.0.0.1"}
+var InvalidDNSServers = []string{"0.0.0.0", "::"}
 
 // DNSProbeDomain 是用于验证解析能力的域名；用真实稳定域名，
 // 随机域名会把"域名不存在"误判成"DNS 服务故障"。

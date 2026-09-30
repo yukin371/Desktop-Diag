@@ -1,5 +1,6 @@
 //go:build windows
 
+// Queries and temporarily sets shared console output state for restoration by ui.
 package winapi
 
 import (
@@ -7,7 +8,7 @@ import (
 )
 
 // 本文件封装控制台查询，以及仅影响本进程控制台的代码页与模式设置。
-// 后者不写磁盘、不改注册表、进程退出即失效，是让中文正确显示所需的最小写操作（已登记在写入白名单中）。
+// 代码页与模式会影响共享控制台；调用方必须保存并恢复，进程退出不保证自动恢复。
 
 var (
 	procGetConsoleMode     = kernel32.NewProc("GetConsoleMode")
@@ -17,15 +18,10 @@ var (
 	procSetConsoleCP       = kernel32.NewProc("SetConsoleCP")
 )
 
-// 控制台代码页与模式常量。
-const (
-	// CPUTF8 是 UTF-8 代码页；不切换则写出的 UTF-8 字节会被按 OEM 代码页（简体中文为 GBK）解释成乱码。
-	CPUTF8 = 65001
-
-	// enableVirtualTerminalProcessing 让控制台把 ANSI 转义序列当作指令而非普通字符。
-	enableVirtualTerminalProcessing = 0x0004
-	enableProcessedOutput           = 0x0001
-)
+// VTOutputMode 返回启用 VT 所需的输出模式，不改变控制台。
+func VTOutputMode(mode uint32) uint32 {
+	return mode | enableVirtualTerminalProcessing | enableProcessedOutput
+}
 
 // GetConsoleMode 返回控制台句柄的当前模式；句柄不是控制台（输出被重定向）时返回错误。
 func GetConsoleMode(handle uintptr) (uint32, error) {

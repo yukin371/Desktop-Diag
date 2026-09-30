@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -27,12 +28,6 @@ const (
 	ExitError  = 2 // 程序自身错误（参数非法 / 无法生成报告）
 )
 
-// globalTimeout 是整体兜底超时。
-//
-// 每一项探测都有自己的超时，这里只防「某次系统调用卡死导致进程永不退出」；
-// 触发时已完成的采集结果仍然有效，未完成的按失败降级记录。
-const globalTimeout = 60 * time.Second
-
 // Run 执行一次完整诊断并返回进程退出码。
 func Run(args []string, stdout, stderr io.Writer) int {
 	return run(args, stdout, stderr, time.Now)
@@ -40,53 +35,97 @@ func Run(args []string, stdout, stderr io.Writer) int {
 
 // run 是注入时间源的 Run，便于测试固定耗时与报告文件名。
 func run(args []string, stdout, stderr io.Writer, now func() time.Time) int {
+	return runWith(args, stdout, stderr, now, collect.All(), writeReport)
+}
+
+// reportWriter 注入报告落盘，以验证退出码和包含落盘的耗时。
+type reportWriter func(cli.Options, *model.Snapshot, []model.Issue, time.Duration, func() time.Time) (report.Outcome, error)
+
+// runWith 使用局部依赖，不改动全局采集器注册表。
+func runWith(args []string, stdout, stderr io.Writer, now func() time.Time, collectors []collect.Collector, write reportWriter) (code int) {
+	console, errorConsole := ui.Setup(stdout), ui.Setup(stderr)
+	defer func() {
+		// stderr 与 stdout 共享代码页，必须按设置的逆序恢复。
+		if err := errorConsole.Close(); err != nil {
+			// 恢复后代码页可能已不再是 UTF-8，错误通知只写 ASCII。
+			console.Line("Console restoration failed: %s", strconv.QuoteToASCII(err.Error()))
+			code = ExitError
+		}
+		if err := console.Close(); err != nil {
+			errorConsole.Line("Console restoration failed: %s", strconv.QuoteToASCII(err.Error()))
+			code = ExitError
+		}
+		if console.Err() != nil || errorConsole.Err() != nil {
+			code = ExitError
+		}
+	}()
 	opts, err := cli.Parse(args)
 	if err != nil {
-		fmt.Fprintf(stderr, "%v\n\n%s", err, cli.Usage)
+		errorConsole.Line("%v\n\n%s", model.ChineseReason(err.Error()), cli.Usage)
 		return ExitError
 	}
 
 	switch {
 	case opts.ShowHelp:
-		fmt.Fprint(stdout, cli.Usage)
+		console.Line("%s", strings.TrimSuffix(cli.Usage, "\n"))
 		return ExitOK
 	case opts.ShowVersion:
-		fmt.Fprintln(stdout, version.String())
+		console.Line("%s", version.String())
 		return ExitOK
 	}
 
-	return diagnose(opts, stdout, stderr, now)
+	return diagnoseWith(opts, console, errorConsole, now, collectors, write)
 }
 
 // diagnose 跑完一次诊断流程，返回退出码。
-func diagnose(opts cli.Options, stdout, stderr io.Writer, now func() time.Time) int {
-	console := ui.Setup(stdout)
+func diagnoseWith(opts cli.Options, console, errorConsole *ui.Console, now func() time.Time, collectors []collect.Collector, write reportWriter) int {
 	console.SetVerbose(opts.Verbose)
 	console.Header(version.String())
+	if err := console.Err(); err != nil {
+		errorConsole.Line("%s", model.ChineseReason(err.Error()))
+		return ExitError
+	}
 
 	started := now()
 	snap := &model.Snapshot{StartedAt: started}
 
-	ctx, cancel := context.WithTimeout(context.Background(), globalTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), detect.CollectionTimeout)
 	defer cancel()
 
-	printSteps(console, collect.Run(ctx, snap))
+	collect.RunCollectors(ctx, snap, collectors, func(event collect.StepEvent) {
+		if event.Started {
+			console.Step(event.Index, event.Total, event.Result.Name, "检测中", model.SevOK)
+		} else {
+			printStep(console, event.Index, event.Total, event.Result)
+			console.Verbosef("详细：%s 耗时=%s，缺失项=%d", event.Result.Name, event.Result.Duration, event.Result.Failures)
+		}
+		if console.Err() != nil {
+			cancel()
+		}
+	})
+	for _, raw := range snap.Raw {
+		console.Verbosef("来源：%s / %s\n%s", raw.Section, raw.Source, raw.Line)
+	}
 	issues := detect.Evaluate(snap)
 	printLayers(console, snap.Layers)
 	printIssues(console, issues)
 
 	elapsed := now().Sub(started)
-	outcome, err := writeReport(opts, snap, issues, elapsed, now)
+	outcome, err := write(opts, snap, issues, elapsed, now)
 	if err != nil {
-		fmt.Fprintf(stderr, "%v\n", err)
+		errorConsole.Line("%s", model.ChineseReason(err.Error()))
 		return ExitError
 	}
 	if outcome.Degraded {
-		console.Line("注意：报告已降级写入「%s」（原因：%s）", outcome.Label, outcome.Reason)
+		console.Line("注意：报告已降级写入「%s」（原因：%s）", outcome.Label, model.ChineseReason(outcome.Reason))
 	}
 
 	severe, warning := model.CountSeverity(issues)
-	console.Summary(severe, warning, outcome.Path, elapsed)
+	console.Summary(severe, warning, outcome.Path, now().Sub(started))
+	if err := console.Err(); err != nil {
+		errorConsole.Line("%s", model.ChineseReason(err.Error()))
+		return ExitError
+	}
 
 	if model.HasSevere(issues) {
 		return ExitSevere
@@ -94,15 +133,15 @@ func diagnose(opts cli.Options, stdout, stderr io.Writer, now func() time.Time) 
 	return ExitOK
 }
 
-// printSteps 逐行打印采集进度（REQ-F-601）。
-func printSteps(console *ui.Console, steps []collect.StepResult) {
-	for i, st := range steps {
-		sev, conclusion := model.SevOK, fmt.Sprintf("完成（%s）", st.Duration.Round(time.Millisecond))
-		if !st.OK() {
-			sev, conclusion = model.SevWarning, "失败："+errText(st.Err)
-		}
-		console.Step(i+1, len(steps), st.Name, conclusion, sev)
+// printStep 区分完整成功、部分采集和采集失败。
+func printStep(console *ui.Console, index, total int, st collect.StepResult) {
+	sev, conclusion := model.SevOK, fmt.Sprintf("完成（%s）", st.Duration.Round(time.Millisecond))
+	if st.Err != nil {
+		sev, conclusion = model.SevWarning, "失败："+errText(st.Err)
+	} else if st.Failures > 0 {
+		sev, conclusion = model.SevWarning, fmt.Sprintf("部分采集（缺失 %d 项）", st.Failures)
 	}
+	console.Step(index, total, st.Name, conclusion, sev)
 }
 
 // printLayers 打印链路故障层级结论（REQ-F-205）。
@@ -112,7 +151,7 @@ func printSteps(console *ui.Console, steps []collect.StepResult) {
 // 限定词正是为了避免读者误以为两者冲突。
 func printLayers(console *ui.Console, layers []model.LayerConclusion) {
 	for _, l := range layers {
-		console.Line("链路可达性：%s（%s）", l.Summary, l.Level)
+		console.Line("链路可达性：%s", l.Summary)
 	}
 }
 
@@ -137,6 +176,8 @@ func writeReport(opts cli.Options, snap *model.Snapshot, issues []model.Issue, e
 	}
 
 	wr := report.Writer{
+		Now:       now,
+		StartedAt: snap.StartedAt,
 		RenderContext: report.RenderContext{
 			Version:      version.Version,
 			Commit:       version.Commit,
@@ -154,5 +195,5 @@ func errText(err error) string {
 	if err == nil {
 		return "未知原因"
 	}
-	return strings.ReplaceAll(err.Error(), "\n", " ")
+	return strings.ReplaceAll(model.ChineseReason(err.Error()), "\n", " ")
 }

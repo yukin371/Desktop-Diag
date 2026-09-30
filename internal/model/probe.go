@@ -1,3 +1,4 @@
+// 本文件定义探测结果、证据完整性与故障层级的公共契约。
 package model
 
 import "time"
@@ -33,31 +34,70 @@ func (k ProbeKind) KindLabel() string {
 // Skipped=true（探测不适用，如无活动网卡）与 Success=false（确实执行了但失败）
 // 是两种语义，混用会把"无网卡"误报成"网络中断"，规则一律以 Skipped 为准。
 type ProbeResult struct {
-	Kind        ProbeKind
-	AdapterName string // ICMP 探测归属网卡；其他探测为空
-	Target      string // "192.168.1.1" / "223.5.5.5:53" / "223.5.5.5:443"
-	Sent        int    // ICMP 发包数
-	Recv        int
-	LossPercent float64
-	MinRTT      time.Duration
-	AvgRTT      time.Duration
-	MaxRTT      time.Duration
-	Success     bool
-	Resolved    []string      // DNS 探测解析结果
-	Duration    time.Duration // 总耗时
-	Err         string        // 失败原因原文（不含敏感信息）
-	Skipped     bool
-	SkipReason  string
+	Kind         ProbeKind
+	AdapterName  string // ICMP 探测归属网卡；其他探测为空
+	AdapterIndex uint32 // 所属接口索引；显示名不作为接口身份。
+	Target       string // "192.168.1.1" / "223.5.5.5:53" / "223.5.5.5:443"
+	Sent         int    // ICMP 发包数
+	Recv         int
+	LossPercent  float64
+	MinRTT       time.Duration
+	AvgRTT       time.Duration
+	MaxRTT       time.Duration
+	Success      bool
+	Resolved     []string      // DNS 探测解析结果
+	Duration     time.Duration // 总耗时
+	Err          string        // 失败原因原文（不含敏感信息）
+	Skipped      bool
+	Incomplete   bool // 探测被取消或部分调用失败，不能用于全部失败结论。
+	SkipReason   string
 }
 
 // Executed 报告该探测是否真的执行过（既未跳过也非空结果）。
 func (p ProbeResult) Executed() bool {
-	return !p.Skipped
+	return !p.Skipped && p.Kind != "" && (p.Kind != ProbeICMPGateway || p.Sent > 0)
 }
 
 // TotalLoss 报告 ICMP 探测是否全部丢包（R-14 的输入）。
 func (p ProbeResult) TotalLoss() bool {
-	return p.Kind == ProbeICMPGateway && p.Sent > 0 && p.Recv == 0
+	return p.Executed() && !p.Incomplete && p.Kind == ProbeICMPGateway && p.Recv == 0
+}
+
+// ProbeEvidence 汇总一类探测的存在性、完整性与成功证据。
+type ProbeEvidence struct {
+	Observed bool // 至少有一条真正执行过的记录。
+	Complete bool // 所需目标均已完成，且没有被跳过或中断。
+	Success  bool // 至少有一条实际成功的记录。
+}
+
+// AssessProbes 检查所有声明目标；缺失目标、Skipped 和 Incomplete 不算失败。
+func AssessProbes(probes []ProbeResult, kind ProbeKind, expected []string) ProbeEvidence {
+	// evidence 在找到真实执行记录前不得证明完整失败。
+	evidence := ProbeEvidence{Complete: true}
+	// completed 保存已完整执行的目标，重复结果不能填满候选数。
+	completed := make(map[string]bool)
+	for _, p := range probes {
+		if p.Kind != kind {
+			continue
+		}
+		if !p.Executed() || p.Incomplete {
+			evidence.Complete = false
+		}
+		if p.Executed() {
+			evidence.Observed = true
+			evidence.Success = evidence.Success || p.Success
+			if !p.Incomplete {
+				completed[p.Target] = true
+			}
+		}
+	}
+	for _, target := range expected {
+		if !completed[target] {
+			evidence.Complete = false
+		}
+	}
+	evidence.Complete = evidence.Complete && evidence.Observed
+	return evidence
 }
 
 // 层级结论取值，对应基线第 6 节的 7 行判定矩阵。

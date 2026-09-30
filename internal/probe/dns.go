@@ -1,5 +1,6 @@
 //go:build windows
 
+// Compares system DNS with a direct public resolver without configuration writes.
 package probe
 
 import (
@@ -9,11 +10,12 @@ import (
 	"net"
 	"time"
 
+	"github.com/yukin371/desktop-diag/internal/detect"
 	"github.com/yukin371/desktop-diag/internal/model"
 )
 
 // defaultDNSTimeout 是未指定超时时的解析上限，与基线 DNSQueryTimeout 一致。
-const defaultDNSTimeout = 3 * time.Second
+const defaultDNSTimeout = detect.DNSQueryTimeout
 
 // DNSOptions 是一次域名解析探测的参数。
 type DNSOptions struct {

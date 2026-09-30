@@ -1,5 +1,6 @@
 //go:build windows
 
+// Registers and renders structured diagnostic sections.
 package report
 
 import (
@@ -94,6 +95,7 @@ func init() {
 	RegisterSection(layer2SubConnect, orderProbe, renderProbeSection)
 }
 
+// renderHostSection renders host identity, operating system and collection failures.
 func renderHostSection(w io.Writer, snap *model.Snapshot) {
 	h := snap.Host
 
@@ -142,6 +144,7 @@ func accountLine(h model.Host) string {
 
 // 网络适配器
 
+// renderAdapterSection renders interface inventory with stable snapshot ordering.
 func renderAdapterSection(w io.Writer, snap *model.Snapshot) {
 	total := len(snap.Adapters)
 	active := 0
@@ -186,6 +189,7 @@ func adapterV6Summary(snap *model.Snapshot) string {
 	return fmt.Sprintf("%d 个地址", v6)
 }
 
+// renderAdapter distinguishes disabled, disconnected and unknown management states.
 func renderAdapter(w io.Writer, n int, a model.Adapter) {
 	name := a.DisplayName()
 	fmt.Fprintf(w, "%s[%d] %s\n", indentInner, n, name)
@@ -196,21 +200,27 @@ func renderAdapter(w io.Writer, n int, a model.Adapter) {
 	}
 
 	state := operStatusLabel(a.OperStatus)
-	if !a.AdminEnabled {
-		// AdminEnabled=false 表示设备管理器里被禁用；这与「链路 Down」是两回事。
-		state += "（设备已被禁用）"
+	if a.AdminKnown && !a.AdminEnabled {
+		// 接口管理停用与链路 Down 不同，不推断一定由设备管理器禁用。
+		state += "（管理已禁用）"
 	} else if !a.IsActive() {
 		state = "已断开"
 	}
+	if !a.AdminKnown {
+		state += "（管理状态未知）"
+	}
 	fmt.Fprintf(w, "%s状态     : %s\n", indentInner, state)
 
-	fmt.Fprintf(w, "%s类型     : %s\n", indentInner, orNotCollected(a.IfType))
+	fmt.Fprintf(w, "%s类型     : %s\n", indentInner, interfaceTypeLabel(a.IfType))
 	if a.Index != 0 {
 		fmt.Fprintf(w, "%s接口索引 : %d\n", indentInner, a.Index)
 	}
+	if a.ID != "" {
+		fmt.Fprintf(w, "%s接口身份 : %s\n", indentInner, a.ID)
+	}
 
 	if a.IsVirtual {
-		kind := strings.TrimSpace(a.VirtualKind)
+		kind := virtualKindLabel(a.VirtualKind)
 		if kind == "" {
 			kind = "未知类型"
 		}
@@ -220,13 +230,21 @@ func renderAdapter(w io.Writer, n int, a model.Adapter) {
 	}
 
 	fmt.Fprintf(w, "%sMAC      : %s\n", indentInner, orNotCollected(a.MAC))
-	renderAddrs(w, "IPv4", a.IPv4, "无 IPv4 地址")
-	renderAddrs(w, "IPv6", a.IPv6, "无 IPv6 地址")
+	if a.AddressMissing {
+		writeKV(w, "IPv4", notCollected+"（地址 API 未提供该接口）")
+		writeKV(w, "IPv6", notCollected+"（地址 API 未提供该接口）")
+	} else {
+		renderAddrs(w, "IPv4", a.IPv4, "无 IPv4 地址")
+		renderAddrs(w, "IPv6", a.IPv6, "无 IPv6 地址")
+	}
 
 	// REQ-F-106 / REQ-F-107：无网关、无 DNS 必须显式写「未配置」而不是空白。
 	gateway := joinOr(a.Gateways, ", ", "未配置")
 	if a.IsActive() && !a.HasGateway() {
 		gateway = "未配置"
+	}
+	if a.AddressMissing {
+		gateway = notCollected + "（地址 API 未提供该接口）"
 	}
 	fmt.Fprintf(w, "%s网关     : %s\n", indentInner, gateway)
 
@@ -239,7 +257,7 @@ func renderAdapter(w io.Writer, n int, a model.Adapter) {
 	switch a.DNSSource {
 	case model.DNSSourceMissing:
 		// S-17：读不到 ≠ 没配置。这里必须区分，否则运维会去查一个并不存在的配置问题。
-		dns = notCollected + "（注册表接口键不可读，无法判定是否配置了 DNS）"
+		dns = notCollected + "（配置来源不可用或设备已禁用，无法判定是否配置了 DNS）"
 	case "":
 		if !a.HasDNS() {
 			dns = "未配置"
@@ -256,7 +274,7 @@ func renderAdapter(w io.Writer, n int, a model.Adapter) {
 		}
 		fmt.Fprintf(w, "%sDHCP     : %s\n", indentInner, on)
 	} else {
-		fmt.Fprintf(w, "%sDHCP     : %s（注册表不可读，无法判定）\n", indentInner, notCollected)
+		fmt.Fprintf(w, "%sDHCP     : %s（地址 API 未提供配置，无法判定）\n", indentInner, notCollected)
 	}
 }
 
@@ -292,7 +310,7 @@ func formatAddr(a model.Addr) string {
 		s += "  掩码: " + m
 	}
 	if sc := strings.TrimSpace(a.Scope); sc != "" {
-		s += "  Scope: " + scopeLabel(sc)
+		s += "  地址范围: " + scopeLabel(sc)
 	}
 	if a.IsAPIPA() {
 		// 169.254 是 DHCP 失败的产物，就地标注可免去用户对照第一层的麻烦。
@@ -301,16 +319,17 @@ func formatAddr(a model.Addr) string {
 	return s
 }
 
+// scopeLabel translates known address scopes and preserves unknown scope values.
 func scopeLabel(s string) string {
 	switch s {
 	case model.ScopeGlobal:
-		return "Global 全局"
+		return "全局"
 	case model.ScopeLinkLocal:
-		return "LinkLocal 链路本地"
+		return "链路本地"
 	case model.ScopeSiteLocal:
-		return "SiteLocal 站点本地"
+		return "站点本地"
 	case model.ScopeOther:
-		return "Other"
+		return "其他"
 	default:
 		return s
 	}
@@ -318,6 +337,7 @@ func scopeLabel(s string) string {
 
 // 系统健康度
 
+// renderHealthSection renders known CPU, memory and disk samples without fabricating zeroes.
 func renderHealthSection(w io.Writer, snap *model.Snapshot) {
 	h := snap.Health
 
@@ -356,6 +376,7 @@ func renderHealthSection(w io.Writer, snap *model.Snapshot) {
 
 // 网络连通性与故障层级
 
+// renderProbeSection renders target evidence, route limitations and layer conclusions.
 func renderProbeSection(w io.Writer, snap *model.Snapshot) {
 	if len(snap.Probes) == 0 {
 		writeKV(w, "连通性探测", notCollected+"（本次诊断未产生任何探测结果）")
@@ -368,6 +389,7 @@ func renderProbeSection(w io.Writer, snap *model.Snapshot) {
 	}
 
 	fmt.Fprintf(w, "%s%s\n", indentInner, probeParamsNote)
+	writeKV(w, "路由语义", "网关目标保留接口身份，但未绑定出接口；DNS/TCP 为全局探测，实际出接口由系统路由决定")
 
 	if len(snap.Layers) == 0 {
 		writeKV(w, "故障层级判定", notCollected+"（缺少探测结果，无法定位故障层级）")
@@ -398,8 +420,13 @@ func renderProbeSection(w io.Writer, snap *model.Snapshot) {
 	}
 }
 
+// renderProbe distinguishes skipped and incomplete sampling from completed network failure.
 func renderProbe(w io.Writer, p model.ProbeResult) {
 	label := probeLabel(p)
+	if p.Incomplete && !p.Skipped {
+		writeLine(w, kvWidth(label, fmt.Sprintf("探测不完整（已发送=%d 已接收=%d；%s），不用于全部失败结论", p.Sent, p.Recv, model.ChineseReason(p.Err)), kvPad, indentInner))
+		return
+	}
 
 	if p.Skipped {
 		// Skipped 与成功/失败是两种语义（model.ProbeResult 注释）。
@@ -407,7 +434,7 @@ func renderProbe(w io.Writer, p model.ProbeResult) {
 		if reason == "" {
 			reason = "未说明原因"
 		}
-		writeLine(w, kvWidth(label, "已跳过（原因: "+reason+"）", kvPad, indentInner))
+		writeLine(w, kvWidth(label, "已跳过（原因: "+model.ChineseReason(reason)+"）", kvPad, indentInner))
 		return
 	}
 
@@ -416,13 +443,13 @@ func renderProbe(w io.Writer, p model.ProbeResult) {
 		if errText == "" {
 			errText = "未返回成功且未提供失败原因"
 		}
-		writeLine(w, kvWidth(label, "失败（"+errText+"）", kvPad, indentInner))
+		writeLine(w, kvWidth(label, "失败（"+model.ChineseReason(errText)+"）", kvPad, indentInner))
 		return
 	}
 
 	switch p.Kind {
 	case model.ProbeICMPGateway:
-		value := fmt.Sprintf("丢包 %s　延迟 平均 %d ms (min %d / max %d)　共 %d/%d 包",
+		value := fmt.Sprintf("丢包 %s　延迟 平均 %d ms (最小 %d / 最大 %d)　共 %d/%d 包",
 			formatPercent(p.LossPercent),
 			formatMillis(p.AvgRTT), formatMillis(p.MinRTT), formatMillis(p.MaxRTT), p.Recv, p.Sent)
 		writeLine(w, kvWidth(label, value, kvPad, indentInner))
@@ -440,6 +467,9 @@ func probeLabel(p model.ProbeResult) string {
 	label := p.Kind.KindLabel()
 	if p.AdapterName != "" {
 		label += "(" + p.AdapterName + ")"
+	}
+	if p.AdapterIndex != 0 {
+		label += fmt.Sprintf("[接口 %d]", p.AdapterIndex)
 	}
 	if t := strings.TrimSpace(p.Target); t != "" {
 		label += " → " + t
@@ -480,4 +510,38 @@ func writeFailures(w io.Writer, failures []model.CollectFailure) {
 // writeKV 输出一行第二层键值对。
 func writeKV(w io.Writer, key, value string) {
 	writeLine(w, kv(key, value))
+}
+
+// interfaceTypeLabel 将内部接口枚举转换为中文，未知值保留供排障。
+func interfaceTypeLabel(kind string) string {
+	switch kind {
+	case model.IfTypeEthernet:
+		return "以太网"
+	case model.IfTypeIEEE80211:
+		return "无线局域网（Wi-Fi）"
+	case model.IfTypeTunnel:
+		return "隧道"
+	case model.IfTypeLoopback:
+		return "回环"
+	case model.IfTypePPP:
+		return "点对点协议（PPP）"
+	case model.IfTypeOther:
+		return "其他"
+	default:
+		return orNotCollected(kind)
+	}
+}
+
+// virtualKindLabel 保留产品名称，将通用虚拟接口类别转换为中文。
+func virtualKindLabel(kind string) string {
+	switch kind {
+	case model.VirtualLoopback:
+		return "回环"
+	case model.VirtualOverlay:
+		return "覆盖网络"
+	case model.VirtualOther:
+		return "其他"
+	default:
+		return strings.TrimSpace(kind)
+	}
 }

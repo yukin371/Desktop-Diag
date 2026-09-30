@@ -848,7 +848,7 @@ func TestFailureLabelClassification(t *testing.T) {
 		{
 			name: "权限不足",
 			in:   model.CollectFailure{Item: "x", Reason: "Access is denied"},
-			want: notCollectedPerm + permReasonPrefix + "Access is denied" + reasonSuffix,
+			want: notCollectedPerm + permReasonPrefix + model.ChineseReason("Access is denied") + reasonSuffix,
 		},
 		{
 			name: "中文权限",
@@ -926,7 +926,7 @@ func TestReportHeaderIncludesActualPath(t *testing.T) {
 	if !strings.Contains(text, "路径选择说明") {
 		t.Error("报告头缺少「路径选择说明」字段")
 	}
-	for _, want := range []string{"诊断时间", "计算机名", "运行账户", "操作系统", "系统运行时长", "诊断工具版本", "总耗时"} {
+	for _, want := range []string{"诊断时间", "计算机名", "运行账户", "操作系统", "系统运行时长", "诊断工具版本", "采集与判定耗时"} {
 		if !strings.Contains(text, want) {
 			t.Errorf("报告头缺少字段 %q", want)
 		}
@@ -1318,7 +1318,7 @@ func TestRenderProbeBranches(t *testing.T) {
 		{
 			name: "失败且带错误文本",
 			p:    model.ProbeResult{Kind: model.ProbeICMPGateway, Success: false, Err: "IcmpSendEcho: 11010"},
-			want: []string{"失败（IcmpSendEcho: 11010）"},
+			want: []string{"失败（" + model.ChineseReason("IcmpSendEcho: 11010") + "）"},
 		},
 		{
 			name: "ICMP 成功",
@@ -1408,10 +1408,10 @@ func TestRenderProbeSectionLayerOrdering(t *testing.T) {
 // TestScopeLabelTable 覆盖 scopeLabel 的枚举分支与未知回落。
 func TestScopeLabelTable(t *testing.T) {
 	cases := map[string]string{
-		model.ScopeGlobal:    "Global 全局",
-		model.ScopeLinkLocal: "LinkLocal 链路本地",
-		model.ScopeSiteLocal: "SiteLocal 站点本地",
-		model.ScopeOther:     "Other",
+		model.ScopeGlobal:    "全局",
+		model.ScopeLinkLocal: "链路本地",
+		model.ScopeSiteLocal: "站点本地",
+		model.ScopeOther:     "其他",
 		"":                   "",
 		"Future":             "Future",
 	}

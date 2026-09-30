@@ -1,212 +1,220 @@
 //go:build windows
 
+// 本文件执行有界并发网关探测与顺序 DNS/TCP 对照，保留未执行和未完成状态。
 package collect
 
 import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/yukin371/desktop-diag/internal/detect"
 	"github.com/yukin371/desktop-diag/internal/model"
 	"github.com/yukin371/desktop-diag/internal/probe"
 )
 
-// probeCollector 执行网络连通性探测并给出故障层级结论。
-type probeCollector struct{}
+// probeCollector 通过可注入的只读探测函数采集连通性，测试无需修改真实网络。
+type probeCollector struct {
+	icmp func(context.Context, string, probe.ICMPOptions) (model.ProbeResult, error)
+	dns  func(context.Context, string, probe.DNSOptions) (model.ProbeResult, error)
+	tcp  func(context.Context, string, probe.TCPOptions) (model.ProbeResult, error)
+}
 
-// Name 实现 Collector。
+// Name 返回进度与失败清单中的采集域名称。
 func (probeCollector) Name() string { return "网络连通性探测" }
 
-// EnvVar 实现 envVarer。
+// EnvVar 返回稳定的采集域标识。
 func (probeCollector) EnvVar() string { return "probe" }
 
-// Collect 实现 Collector。
-//
-// 探测顺序固定为「网关 → 系统 DNS → 直连 DNS → 公网 TCP 443」，这条顺序本身就是
-// 诊断逻辑：从最内层往外逐段验证，任何一段的失败都能被后续结果区分成"这一段的
-// 问题"还是"更外层的问题"。
-//
-// # 最要紧的一条纪律
-//
-// **探测"没能发起"与"发起了但没回应"必须严格区分。** 前者说明是本工具或权限出了
-// 问题（属于诊断完整性），后者才是网络故障的证据。把前者记成后者，会让一台网络
-// 完好的机器被判成"内网链路中断"（SEVERE），运维据此去查交换机，白忙一场。
-// 本文件用 Skipped 标记表达前者：Skipped=true、Sent=0，同时记一条降级项。
+// defaults 填入正式探测实现，不改变传入实例或全局函数。
+func (c probeCollector) defaults() probeCollector {
+	if c.icmp == nil {
+		c.icmp = probe.ICMP
+	}
+	if c.dns == nil {
+		c.dns = probe.DNS
+	}
+	if c.tcp == nil {
+		c.tcp = probe.TCP
+	}
+	return c
+}
+
+// Collect 先收集逐接口网关证据，再执行全局 DNS/TCP；超时仍记录所有未完成目标。
 func (c probeCollector) Collect(ctx context.Context, snap *model.Snapshot) error {
-	active := snap.ActivePhysicalAdapters()
-	var probes []model.ProbeResult
-
-	probes = append(probes, c.probeGateways(ctx, snap, active)...)
-
+	c = c.defaults()
+	// active 优先使用物理接口，只有虚拟默认出口时按模型约定回退。
+	active := snap.ProbeAdapters()
+	// probes 仅由调度线程写入，并发工作者只返回独立结果。
+	probes := c.probeGateways(ctx, snap, active)
 	if len(active) == 0 {
-		// 没有任何活动物理网卡：不能去"探测失败"，只能如实说没探。
-		probes = append(probes, skippedProbe(model.ProbeICMPGateway, "", "", "没有处于活动状态的物理网卡"))
-		probes = append(probes, skippedProbe(model.ProbeDNSSystem, "", "", "没有处于活动状态的物理网卡"))
-		probes = append(probes, skippedProbe(model.ProbeDNSDirect, "", "", "没有处于活动状态的物理网卡"))
-		probes = append(probes, skippedProbe(model.ProbeTCP443, "", "", "没有处于活动状态的物理网卡"))
-		snap.AddFailure(c.Name(), c.EnvVar(), "没有处于活动状态的物理网卡，网络探测全部跳过", true)
-
-		snap.Probes = probes
-		snap.Layers = probe.Classify(probes)
-		return nil
-	}
-
-	if ctx.Err() == nil {
+		for _, kind := range []model.ProbeKind{model.ProbeICMPGateway, model.ProbeDNSSystem, model.ProbeDNSDirect, model.ProbeTCP443} {
+			probes = append(probes, skippedProbe(kind, "", "", "没有可诊断的活动接口（含默认路由虚拟出口）"))
+		}
+		snap.AddFailure(c.Name(), c.EnvVar(), "没有可诊断的活动接口，网络探测全部跳过；覆盖网络与无默认路由虚拟接口不在探测范围", true)
+	} else {
 		probes = append(probes, c.probeDNS(ctx, snap)...)
-	}
-	if ctx.Err() == nil {
 		probes = append(probes, c.probeTCP(ctx, snap)...)
 	}
-
 	snap.Probes = probes
 	snap.Layers = probe.Classify(probes)
+	snap.AddRaw("网络连通性", "路由语义", "ICMP 按目标网关标注所属接口，实际出接口由系统路由决定；DNS/TCP 为全局探测，不证明每个接口均正常")
 	return nil
 }
 
-// probeGateways 对每块活动物理网卡的网关做一次 ICMP 探测。
+// probeGateways 以固定工作者数探测，完成后按输入接口顺序串行合并快照。
 func (c probeCollector) probeGateways(ctx context.Context, snap *model.Snapshot, active []model.Adapter) []model.ProbeResult {
-	var out []model.ProbeResult
-
-	probed := 0
-	for _, a := range active {
-		gw := a.FirstGateway()
-		if gw == "" {
-			// 无网关由 R-02 表达，这里不产生探测记录，免得报告里出现"探测目标为空"的噪声。
-			continue
-		}
-		if ctx.Err() != nil {
-			out = append(out, skippedProbe(model.ProbeICMPGateway, a.DisplayName(), gw, "探测被中断"))
-			continue
-		}
-		probed++
-
-		r, err := probe.ICMP(ctx, gw, probe.ICMPOptions{
-			Count:       detect.ICMPPacketCount,
-			Timeout:     detect.ICMPTimeout,
-			AdapterName: a.DisplayName(),
-		})
-		if err != nil {
-			out = append(out, skippedProbe(model.ProbeICMPGateway, a.DisplayName(), gw,
-				"ICMP 探测未能发起: "+err.Error()))
-			snap.AddFailure(c.Name(), c.EnvVar(),
-				fmt.Sprintf("对网关 %s 的 ICMP 探测未能发起（结果不计入丢包率，避免误判内网中断）: %v", gw, err), true)
-			continue
-		}
-		out = append(out, r)
-		snap.AddRaw("网络连通性", "IcmpSendEcho", fmt.Sprintf("%s → %s：%s", a.DisplayName(), gw, probeSummary(r)))
+	c = c.defaults()
+	// results 固定每个接口的位置，避免完成先后影响报告顺序。
+	results := make([]model.ProbeResult, len(active))
+	// jobs 为每个工作者分配唯一位置，不允许并发写相同元素。
+	jobs := make(chan int, len(active))
+	for i := range active {
+		jobs <- i
 	}
-
-	if probed == 0 {
-		snap.AddRaw("网络连通性", "IcmpSendEcho", "（所有活动网卡均未配置网关，未发起网关探测）")
+	close(jobs)
+	// workers 限制系统句柄数和同一时刻的网络请求数。
+	workers := min(detect.GatewayWorkers, len(active))
+	// wait 等待工作者完成后再接触 Snapshot。
+	var wait sync.WaitGroup
+	for range workers {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			for i := range jobs {
+				results[i] = c.probeGateway(ctx, active[i])
+			}
+		}()
 	}
-	return out
+	wait.Wait()
+	for i, result := range results {
+		snap.AddRaw("网络连通性", "IcmpSendEcho", fmt.Sprintf("接口 %d %s → %s：%s", result.AdapterIndex, result.AdapterName, result.Target, probeSummary(result)))
+		if result.Incomplete || (result.Skipped && active[i].HasGateway()) {
+			snap.AddFailure(c.Name(), c.EnvVar(), fmt.Sprintf("接口 %d %s 的网关探测不完整：%s", result.AdapterIndex, result.AdapterName, probeSummary(result)), true)
+		}
+	}
+	return results
 }
 
-// probeDNS 依次做系统 DNS 解析与直连 DNS 解析。
-//
-// 两次探测的**组合**才是判据：系统失败而直连成功说明本机 DNS 有问题（R-15），
-// 两者都失败则是更外层的故障（R-16）。
+// probeGateway 保留接口身份；单工作者异常转为缺失证据，不让 goroutine 崩溃整个进程。
+func (c probeCollector) probeGateway(ctx context.Context, a model.Adapter) (result model.ProbeResult) {
+	defer func() {
+		if cause := recover(); cause != nil {
+			result = skippedProbe(model.ProbeICMPGateway, a.DisplayName(), a.FirstGateway(), fmt.Sprintf("网关探测内部错误：%v", cause))
+			result.AdapterIndex = a.Index
+		}
+	}()
+	// gateway 只取 IPv4，IPv6 仅展示并明确能力缺失。
+	gateway := a.FirstGateway()
+	if gateway == "" {
+		// reason 区分配置缺失与协议能力缺失，前者交给配置规则。
+		reason := "未配置 IPv4 默认网关"
+		if len(a.GatewaysV6) > 0 {
+			reason = "MVP 不支持 IPv6 网关 ICMP；IPv6 默认路由已采集，IPv4 网关探测未执行"
+		}
+		result = skippedProbe(model.ProbeICMPGateway, a.DisplayName(), "", reason)
+	} else if err := ctx.Err(); err != nil {
+		result = skippedProbe(model.ProbeICMPGateway, a.DisplayName(), gateway, "探测预算已结束："+err.Error())
+	} else {
+		// err 表示未能发起调用；不能伪造网关无回包。
+		var err error
+		result, err = c.icmp(ctx, gateway, probe.ICMPOptions{Count: detect.ICMPPacketCount, Timeout: detect.ICMPTimeout, AdapterName: a.DisplayName(), AdapterIndex: a.Index})
+		if err != nil {
+			result = skippedProbe(model.ProbeICMPGateway, a.DisplayName(), gateway, "ICMP 探测未能完成："+err.Error())
+		}
+	}
+	result.AdapterIndex = a.Index
+	return result
+}
+
+// probeDNS 执行两次解析对照，预算不足时为每个缺失项分别留痕。
 func (c probeCollector) probeDNS(ctx context.Context, snap *model.Snapshot) []model.ProbeResult {
-	var out []model.ProbeResult
-
-	sys, err := probe.DNS(ctx, detect.DNSProbeDomain, probe.DNSOptions{
-		Timeout: detect.DNSQueryTimeout,
-	})
-	if err != nil {
-		out = append(out, skippedProbe(model.ProbeDNSSystem, "", detect.DNSProbeDomain,
-			"系统 DNS 探测未能发起: "+err.Error()))
-		snap.AddFailure(c.Name(), c.EnvVar(), "系统 DNS 探测未能发起: "+err.Error(), true)
-	} else {
-		out = append(out, sys)
-		snap.AddRaw("网络连通性", "net.LookupHost(系统解析栈)",
-			fmt.Sprintf("%s → %s", detect.DNSProbeDomain, probeSummary(sys)))
+	// results 保持系统解析在直连解析之前。
+	var results []model.ProbeResult
+	for _, resolver := range []string{"", detect.DNSDirectResolver} {
+		// kind/target 表示当前解析器与固定测试目标。
+		kind, target := probe.DNSKind(resolver), detect.DNSProbeDomain
+		if resolver != "" {
+			target = resolver
+		}
+		// result/error 分别承载网络结果与调用失败。
+		var result model.ProbeResult
+		var err error
+		if ctx.Err() != nil {
+			err = ctx.Err()
+		} else {
+			result, err = c.dns(ctx, detect.DNSProbeDomain, probe.DNSOptions{Timeout: detect.DNSQueryTimeout, Resolver: resolver})
+		}
+		if err != nil {
+			result = skippedProbe(kind, "", target, "DNS 探测未能完成："+err.Error())
+		}
+		if ctx.Err() != nil && !result.Skipped {
+			result.Incomplete = true
+			result.Err = ctx.Err().Error()
+		}
+		c.recordProbe(snap, result, "DNS 对照")
+		results = append(results, result)
 	}
-
-	if ctx.Err() != nil {
-		out = append(out, skippedProbe(model.ProbeDNSDirect, "", detect.DNSDirectResolver, "探测被中断"))
-		return out
-	}
-
-	direct, err := probe.DNS(ctx, detect.DNSProbeDomain, probe.DNSOptions{
-		Timeout:  detect.DNSQueryTimeout,
-		Resolver: detect.DNSDirectResolver,
-	})
-	if err != nil {
-		out = append(out, skippedProbe(model.ProbeDNSDirect, "", detect.DNSDirectResolver,
-			"直连 DNS 探测未能发起: "+err.Error()))
-		snap.AddFailure(c.Name(), c.EnvVar(), "直连 DNS 探测未能发起: "+err.Error(), true)
-	} else {
-		out = append(out, direct)
-		snap.AddRaw("网络连通性", "net.Resolver{PreferGo:true} → "+detect.DNSDirectResolver,
-			fmt.Sprintf("%s → %s", detect.DNSProbeDomain, probeSummary(direct)))
-	}
-	return out
+	return results
 }
 
-// probeTCP 依次尝试公网 TCP 443 目标，**首个成功即停止**。
-//
-// 这里要回答的问题只有一个——"公网 443 到底通不通"：有一个目标握手成功就再试无益，
-// 全部失败时试完候选才能给出"三个候选目标都不可达"这一更强的证据。
+// probeTCP 首个成功即停止；预算中断时仍保留未尝试候选，不能把部分失败当全部失败。
 func (c probeCollector) probeTCP(ctx context.Context, snap *model.Snapshot) []model.ProbeResult {
-	var out []model.ProbeResult
-
-	for i, target := range detect.TCP443Targets {
+	// results 保持固定候选顺序，成功之后不再发起网络调用。
+	var results []model.ProbeResult
+	for _, target := range detect.TCP443Targets {
+		// result/error 分别承载 TCP 握手与未能发起探测的原因。
+		var result model.ProbeResult
+		var err error
 		if ctx.Err() != nil {
-			out = append(out, skippedProbe(model.ProbeTCP443, "", target, "探测被中断"))
-			continue
+			err = ctx.Err()
+		} else {
+			result, err = c.tcp(ctx, target, probe.TCPOptions{Timeout: detect.TCPDialTimeout})
 		}
-
-		r, err := probe.TCP(ctx, target, probe.TCPOptions{Timeout: detect.TCPDialTimeout})
 		if err != nil {
-			out = append(out, skippedProbe(model.ProbeTCP443, "", target,
-				"TCP 探测未能发起: "+err.Error()))
-			snap.AddFailure(c.Name(), c.EnvVar(),
-				fmt.Sprintf("对 %s 的 TCP 探测未能发起: %v", target, err), true)
-			continue
+			result = skippedProbe(model.ProbeTCP443, "", target, "TCP 探测未能完成："+err.Error())
 		}
-		out = append(out, r)
-		snap.AddRaw("网络连通性", "net.DialTimeout(tcp)",
-			fmt.Sprintf("%s（候选 %d/%d）→ %s", target, i+1, len(detect.TCP443Targets), probeSummary(r)))
-
-		if r.Success {
+		if ctx.Err() != nil && !result.Skipped {
+			result.Incomplete = true
+			result.Err = ctx.Err().Error()
+		}
+		c.recordProbe(snap, result, "TCP 443 直连（不走系统代理）")
+		results = append(results, result)
+		if result.Success {
 			break
 		}
 	}
-	return out
+	return results
 }
 
-// skippedProbe 构造一条"没有真正发起"的探测记录。
-//
-// Sent 保持 0 且 Skipped 为 true，判定层据此把这条排除在丢包率与失败率统计之外。
-func skippedProbe(kind model.ProbeKind, adapter, target, reason string) model.ProbeResult {
-	return model.ProbeResult{
-		Kind:        kind,
-		AdapterName: adapter,
-		Target:      target,
-		Skipped:     true,
-		SkipReason:  reason,
+// recordProbe 将已完成结果与能力缺失统一写入原始附录和失败清单。
+func (c probeCollector) recordProbe(snap *model.Snapshot, result model.ProbeResult, source string) {
+	snap.AddRaw("网络连通性", source, result.Target+" → "+probeSummary(result))
+	if result.Skipped || result.Incomplete {
+		snap.AddFailure(c.Name(), c.EnvVar(), result.Kind.KindLabel()+"："+probeSummary(result), true)
 	}
 }
 
-// probeSummary 把一条探测结果压成一行可读文本，供报告第三层附录使用。
+// skippedProbe 构造未执行记录；发送数保持为零，不计入丢包率。
+func skippedProbe(kind model.ProbeKind, adapter, target, reason string) model.ProbeResult {
+	return model.ProbeResult{Kind: kind, AdapterName: adapter, Target: target, Skipped: true, SkipReason: reason}
+}
+
+// probeSummary 将结果压成一行；未完成采样不能伪装成完整失败。
 func probeSummary(r model.ProbeResult) string {
 	if r.Skipped {
 		return "已跳过（" + r.SkipReason + "）"
 	}
+	if r.Incomplete {
+		return "未完成（" + r.Err + "）"
+	}
 	if r.Kind == model.ProbeICMPGateway {
-		return fmt.Sprintf("发送 %d 收 %d 丢包 %.0f%% 平均 %v", r.Sent, r.Recv, r.LossPercent, r.AvgRTT.Round(1_000_000))
+		return fmt.Sprintf("发送 %d 收 %d 丢包 %.0f%% 平均 %v", r.Sent, r.Recv, r.LossPercent, r.AvgRTT.Round(time.Millisecond))
 	}
 	if r.Success {
-		resolved := ""
-		if len(r.Resolved) > 0 {
-			resolved = " 解析=" + strings.Join(r.Resolved, ",")
-		}
-		return fmt.Sprintf("成功（耗时 %v）%s", r.Duration.Round(1_000_000), resolved)
+		return fmt.Sprintf("成功（耗时 %v）解析=%s", r.Duration.Round(time.Millisecond), strings.Join(r.Resolved, ","))
 	}
-	reason := "失败"
-	if r.Err != "" {
-		reason = "失败：" + r.Err
-	}
-	return fmt.Sprintf("%s（耗时 %v）", reason, r.Duration.Round(1_000_000))
+	return fmt.Sprintf("失败（耗时 %v）：%s", r.Duration.Round(time.Millisecond), r.Err)
 }

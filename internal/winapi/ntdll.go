@@ -1,5 +1,6 @@
 //go:build windows
 
+// Queries native Windows version information without compatibility manifest overrides.
 package winapi
 
 import (
@@ -49,6 +50,7 @@ type NTStatusError struct {
 	Status uint32
 }
 
+// Error formats the native status code without discarding its numeric identity.
 func (e *NTStatusError) Error() string {
 	return e.API + ": NTSTATUS 0x" + hex32(e.Status)
 }

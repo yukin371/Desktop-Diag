@@ -1,5 +1,6 @@
 //go:build windows
 
+// Registers collection domains in their required dependency order.
 package collect
 
 // 注册顺序即执行顺序，不能调换：

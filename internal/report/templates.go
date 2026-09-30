@@ -281,7 +281,7 @@ func failureLabel(f model.CollectFailure) string {
 	if strings.TrimSpace(f.Reason) == "" {
 		return head
 	}
-	return head + permReasonPrefix + strings.TrimSpace(f.Reason) + reasonSuffix
+	return head + permReasonPrefix + model.ChineseReason(f.Reason) + reasonSuffix
 }
 
 // failureShort 生成一行简短摘要，供第一层「诊断不完整」清单使用。
@@ -291,7 +291,7 @@ func failureShort(f model.CollectFailure) string {
 		item = orNotCollected(f.EnvVar)
 	}
 	// 清单要短：原因原文可能很长（含状态码/路径），截断避免撑爆行宽。
-	reason := strings.TrimSpace(f.Reason)
+	reason := model.ChineseReason(f.Reason)
 	if reason == "" {
 		reason = "原因未知"
 	}
