@@ -226,9 +226,9 @@ T-03 的 Win32 布局验证仍是高风险前置任务。T-35 的 PRD 文字修�
 
 ### 阶段 5 · 工程化流水线
 
-- [ ] **T-31** `scripts/` 三个脚本（build / test / release）
-- [ ] **T-32** `.github/workflows/ci.yml`
-- [ ] **T-33** 5 项质量门禁自动化
+- [x] **T-31** `scripts/` 三个脚本（build / test / release）已实现；`release.ps1` 本机发布冒烟通过
+- [x] **T-32** `.github/workflows/ci.yml` 已实现，待 Windows runner 验证
+- [x] **T-33** 5 项质量门禁自动化已实现，本机通过；待 Windows runner 验证
 
 ### 阶段 6 · 文档整理
 
