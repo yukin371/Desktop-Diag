@@ -34,4 +34,4 @@
 
 ## 验证记录
 
-GitHub Actions 运行：[Windows quality gates #37174602631](https://github.com/yukin371/Desktop-Diag/actions/runs/37174602631)。该运行验证了统一门禁；后续提交增加了发布包验证和构建产物归档。Actions 只证明构建与脚本门禁通过，不替代阶段四保留的真机环境限制，也不自动创建版本 tag。
+GitHub Actions 最终运行：[Windows quality gates #37176315741](https://github.com/yukin371/Desktop-Diag/actions/runs/37176315741)。它验证了统一门禁、发布包、SHA256、构建元数据和产物归档；artifact 保留 14 天。Actions 只证明构建与脚本门禁通过，不替代阶段四保留的真机环境限制，也不自动创建版本 tag。
