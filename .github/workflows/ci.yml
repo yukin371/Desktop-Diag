@@ -39,7 +39,7 @@ jobs:
         run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/release.ps1 -Version ci-${{ github.sha }} -OutputDir dist/ci-release
 
       - name: Upload verification artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: desktop-diag-ci-${{ github.sha }}
           path: |
