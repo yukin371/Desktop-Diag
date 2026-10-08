@@ -18,7 +18,10 @@
 [CmdletBinding()]
 param(
     [string]$Version = "",
-    [string]$OutputDir = ""
+    [string]$OutputDir = "",
+    [string]$CertificateThumbprint = "",
+    [string]$TimestampServer = "",
+    [switch]$RequireSignature
 )
 
 $ErrorActionPreference = "Stop"
@@ -45,6 +48,9 @@ function Get-GitValue {
     }
 }
 
+# Refuse a signing-required release before creating any artifacts when no identity is supplied.
+if ($RequireSignature -and -not $CertificateThumbprint) { throw "RequireSignature 必须提供可信 CertificateThumbprint" }
+
 Push-Location $diagRepoRoot
 try {
     if ([string]::IsNullOrWhiteSpace($Version)) {
@@ -69,6 +75,20 @@ try {
     $diagTargetExe = Join-Path $OutputDir "Desktop-Diag.exe"
     Copy-Item -LiteralPath $diagSourceExe -Destination $diagTargetExe -Force
 
+    # Sign before hashing; no private key or password is copied into the release directory.
+    if ($CertificateThumbprint) {
+        if (-not $TimestampServer.StartsWith("https://")) { throw "签名须提供 HTTPS RFC3161 TimestampServer" }
+        $diagSigner = Get-Command signtool.exe -ErrorAction Stop
+        & $diagSigner.Source sign /sha1 $CertificateThumbprint /fd SHA256 /tr $TimestampServer /td SHA256 $diagTargetExe
+        if ($LASTEXITCODE -ne 0) { throw "Authenticode 签名失败" }
+        & $diagSigner.Source verify /pa /all $diagTargetExe
+        if ($LASTEXITCODE -ne 0) { throw "Authenticode 验证失败" }
+    }
+    $diagSignature = Get-AuthenticodeSignature -LiteralPath $diagTargetExe
+    if ($RequireSignature -and $diagSignature.Status -ne 'Valid') { throw "正式发布要求有效可信签名，当前为 $($diagSignature.Status)" }
+    if ($CertificateThumbprint -and $diagSignature.Status -ne 'Valid') { throw "签名不受信任: $($diagSignature.Status)" }
+    if ($diagSignature.Status -ne 'Valid') { Write-Warning "候选 EXE 未取得可信签名；不能保证 SmartScreen 放行。" }
+
     $diagHash = (Get-FileHash -LiteralPath $diagTargetExe -Algorithm SHA256).Hash.ToUpperInvariant()
     $diagHashPath = Join-Path $OutputDir "Desktop-Diag.exe.sha256"
     [IO.File]::WriteAllText($diagHashPath, "$diagHash  Desktop-Diag.exe`n", (New-Object Text.UTF8Encoding($false)))
@@ -76,6 +96,8 @@ try {
     $diagCommit = Get-GitValue -Arguments @("rev-parse", "--short", "HEAD") -Fallback "unknown"
     $diagBuildTime = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
     $diagMetadata = [ordered]@{
+        signatureStatus = [string]$diagSignature.Status
+        signerSubject = if ($diagSignature.SignerCertificate) { $diagSignature.SignerCertificate.Subject } else { $null }
         version = $Version
         commit = $diagCommit
         buildTime = $diagBuildTime
