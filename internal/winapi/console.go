@@ -88,3 +88,13 @@ func EnableVTProcessing(handle uintptr) bool {
 	}
 	return true
 }
+
+// DedicatedConsole reports whether this process alone owns the console, as in Explorer launch.
+func DedicatedConsole() (bool, error) {
+	var pid uint32
+	count, _, err := kernel32.NewProc("GetConsoleProcessList").Call(uintptr(unsafe.Pointer(&pid)), 1)
+	if count == 0 {
+		return false, callError("GetConsoleProcessList", err)
+	}
+	return count == 1, nil
+}

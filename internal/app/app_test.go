@@ -64,7 +64,7 @@ func TestRunWritesReportAndSummary(t *testing.T) {
 		t.Fatalf("诊断应正常结束，实际退出码 %d，stderr=%s", code, errOut.String())
 	}
 
-	files, err := filepath.Glob(filepath.Join(dir, "diag_*.txt"))
+	files, err := filepath.Glob(filepath.Join(dir, "diag_*.html"))
 	if err != nil {
 		t.Fatal(err)
 	}

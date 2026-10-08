@@ -25,6 +25,7 @@ const (
 	// fileNamePrefix / fileNameExt 组成 diag_YYYYMMDD_HHMMSS.txt。
 	fileNamePrefix = "diag_"
 	fileNameExt    = ".txt"
+	htmlFileExt    = ".html"
 
 	// collisionSuffixFormat 是撞名时的追加序号（_1、_2…）。
 	collisionSuffixFormat = "_%d"
@@ -176,6 +177,8 @@ func ErrorString(attempts []Attempt) string {
 
 // Writer 是报告的渲染 + 落盘入口。
 type Writer struct {
+	// HTML 启用自包含 HTML 报告；零值保留 TXT 写入接口。
+	HTML bool
 	// RenderContext 提供版本与耗时等报告环境信息；
 	// 其中 ReportPath 与 PathNote 由 Write 覆盖，调用方无需填。
 	RenderContext RenderContext
@@ -214,6 +217,23 @@ func (wr Writer) BuildReportContent(snap *model.Snapshot, issues []model.Issue) 
 		ctx.ReportPath = "(尚未落盘)"
 	}
 
+	if wr.HTML {
+		var extras []string
+		for _, extra := range wr.Writers {
+			if extra == nil {
+				continue
+			}
+			text, err := captureSection(extra)
+			if err != nil {
+				return nil, fmt.Errorf("渲染 HTML 附加正文失败: %w", err)
+			}
+			extras = append(extras, text)
+		}
+		if err := RenderHTML(&buf, snap, issues, ctx, extras); err != nil {
+			return nil, err
+		}
+		return buf.Bytes(), nil
+	}
 	if err := Render(&buf, snap, issues, ctx); err != nil {
 		return nil, err
 	}
@@ -373,7 +393,11 @@ func (wr Writer) writeToDir(c Candidate, snap *model.Snapshot, issues []model.Is
 	if remove == nil {
 		remove = os.Remove
 	}
-	f, full, err := reserve(c.Dir, ReportFileName(wr.now()))
+	name := ReportFileName(wr.now())
+	if wr.HTML {
+		name = strings.TrimSuffix(name, fileNameExt) + htmlFileExt
+	}
+	f, full, err := reserve(c.Dir, name)
 	if err != nil {
 		return "", err
 	}
@@ -409,7 +433,7 @@ func (wr Writer) writeToDir(c Candidate, snap *model.Snapshot, issues []model.Is
 		}
 		return fail(fmt.Errorf("写入报告 %s 失败: %w", full, err))
 	}
-	if !wr.StartedAt.IsZero() {
+	if !wr.HTML && !wr.StartedAt.IsZero() {
 		if _, err := WriteCRLF(f, fmt.Sprintf("总耗时（截至报告正文写入，不含关闭）：%s\n", wr.now().Sub(wr.StartedAt).Round(time.Millisecond))); err != nil {
 			return fail(fmt.Errorf("写入报告耗时失败: %w", err))
 		}
@@ -431,7 +455,8 @@ func reserveReportFile(dir, baseName string) (*os.File, string, error) {
 	for attempt := 0; attempt <= maxCollisionAttempts; attempt++ {
 		name := baseName
 		if attempt > 0 {
-			name = strings.TrimSuffix(baseName, fileNameExt) + fmt.Sprintf(collisionSuffixFormat, attempt) + fileNameExt
+			ext := filepath.Ext(baseName)
+			name = strings.TrimSuffix(baseName, ext) + fmt.Sprintf(collisionSuffixFormat, attempt) + ext
 		}
 		full := filepath.Join(dir, name)
 

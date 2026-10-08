@@ -4,6 +4,7 @@
 package app
 
 import (
+	"bufio"
 	"context"
 	"fmt"
 	"io"
@@ -19,6 +20,7 @@ import (
 	"github.com/yukin371/desktop-diag/internal/report"
 	"github.com/yukin371/desktop-diag/internal/ui"
 	"github.com/yukin371/desktop-diag/internal/version"
+	"github.com/yukin371/desktop-diag/internal/winapi"
 )
 
 // 退出码语义，详见基线第 9 节。
@@ -30,7 +32,19 @@ const (
 
 // Run 执行一次完整诊断并返回进程退出码。
 func Run(args []string, stdout, stderr io.Writer) int {
-	return run(args, stdout, stderr, time.Now)
+	interactive := winapi.IsConsole(os.Stdin.Fd()) && stdout == os.Stdout && winapi.IsConsole(os.Stdout.Fd())
+	if interactive {
+		dedicated, err := winapi.DedicatedConsole()
+		if err != nil {
+			interactive = false
+			if _, writeErr := fmt.Fprintf(stderr, "无法确认启动方式，将直接诊断：%v\n", err); writeErr != nil {
+				return ExitError
+			}
+		} else {
+			interactive = dedicated
+		}
+	}
+	return runDesktop(args, stdout, stderr, os.Stdin, interactive, time.Now)
 }
 
 // run 是注入时间源的 Run，便于测试固定耗时与报告文件名。
@@ -122,6 +136,11 @@ func diagnoseWith(opts cli.Options, console, errorConsole *ui.Console, now func(
 
 	severe, warning := model.CountSeverity(issues)
 	console.Summary(severe, warning, outcome.Path, now().Sub(started))
+	if opts.Open && !opts.NoOpen {
+		if err := winapi.OpenReport(outcome.Path); err != nil {
+			console.Line("报告已保存，但无法自动打开：%s；请手动打开上述路径。", err.Error())
+		}
+	}
 	if err := console.Err(); err != nil {
 		errorConsole.Line("%s", model.ChineseReason(err.Error()))
 		return ExitError
@@ -176,6 +195,7 @@ func writeReport(opts cli.Options, snap *model.Snapshot, issues []model.Issue, e
 	}
 
 	wr := report.Writer{
+		HTML:      opts.Format != "txt",
 		Now:       now,
 		StartedAt: snap.StartedAt,
 		RenderContext: report.RenderContext{
@@ -185,6 +205,7 @@ func writeReport(opts cli.Options, snap *model.Snapshot, issues []model.Issue, e
 			ExePath:      exe,
 			TotalElapsed: elapsed,
 			GeneratedAt:  now(),
+			PlainText:    opts.Format == "txt",
 		},
 	}
 	return wr.Write(snap, issues, report.ResolveTargets(opts.OutputDir))
@@ -196,4 +217,53 @@ func errText(err error) string {
 		return "未知原因"
 	}
 	return strings.ReplaceAll(model.ChineseReason(err.Error()), "\n", " ")
+}
+
+// runDesktop adds a launch guide only for a dedicated interactive console; tests inject input.
+func runDesktop(args []string, stdout, stderr io.Writer, input io.Reader, interactive bool, now func() time.Time) (code int) {
+	opts, err := cli.Parse(args)
+	if err != nil || opts.ShowHelp || opts.ShowVersion || !interactive {
+		return run(args, stdout, stderr, now)
+	}
+	console := ui.Setup(stdout)
+	defer func() {
+		if err := console.Close(); err != nil {
+			if _, writeErr := fmt.Fprintln(stderr, "Console restoration failed:", err); writeErr != nil {
+				code = ExitError
+			}
+			code = ExitError
+		}
+	}()
+	console.Line("Desktop-Diag / 桌面诊断\n仅采集诊断信息，不修改系统配置。\n按 Enter 开始完整诊断，输入 Q 后按 Enter 退出。")
+	if console.Err() != nil {
+		return ExitError
+	}
+	reader := bufio.NewReader(input)
+	for {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			console.Line("无法读取启动选择：%v", err)
+			return ExitError
+		}
+		choice := strings.TrimSpace(line)
+		if strings.EqualFold(choice, "q") {
+			return ExitOK
+		}
+		if choice == "" {
+			break
+		}
+		console.Line("请按 Enter 开始，或输入 Q 后按 Enter 退出。")
+	}
+	if !opts.NoOpen && !opts.Open {
+		args = append(append([]string{}, args...), "-open")
+	}
+	code = run(args, stdout, stderr, now)
+	console.Line("诊断已结束。按 Enter 关闭窗口。")
+	if _, err := reader.ReadString('\n'); err != nil {
+		console.Line("关闭确认读取失败：%v", err)
+	}
+	if console.Err() != nil {
+		return ExitError
+	}
+	return code
 }

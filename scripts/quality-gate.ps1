@@ -74,7 +74,10 @@ try {
             Where-Object { $_.Name -notlike "*_test.go" }
     )
     $diagForbiddenPattern = 'RegSetValue|RegCreateKey|SetIpInterfaceEntry|CreateService|InternetOpen|os/exec|exec\.Command|CreateProcess|ShellExecute|powershell|wmic|wscript|cscript|cmd\.exe'
-    $diagHits = @($diagProductionFiles | Select-String -Pattern $diagForbiddenPattern)
+    $diagHits = @($diagProductionFiles | Select-String -Pattern $diagForbiddenPattern | Where-Object {
+            # CR-05 allows exactly one report-only file-association call; all other launch APIs remain forbidden.
+            -not ($_.Path -eq (Join-Path $diagRepoRoot "internal\winapi\report_open.go") -and $_.Line.Trim() -eq 'if err := windows.ShellExecute(0, verb, file, nil, nil, reportShowNormal); err != nil {')
+        })
     if ($diagHits.Count -gt 0) {
         $diagDetails = $diagHits | ForEach-Object { "$($_.Path):$($_.LineNumber): $($_.Line.Trim())" }
         throw "生产代码命中禁用 API/外部进程候选项:`n$($diagDetails -join "`n")"

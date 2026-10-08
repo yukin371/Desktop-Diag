@@ -14,8 +14,8 @@ func TestParseDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("空参数不应报错: %v", err)
 	}
-	if opts.OutputDir != "" || opts.Verbose || opts.ShowVersion || opts.ShowHelp {
-		t.Fatalf("默认值应为全零值，实际 %+v", opts)
+	if opts.OutputDir != "" || opts.Verbose || opts.ShowVersion || opts.ShowHelp || opts.Format != "html" {
+		t.Fatalf("默认应为 HTML 且其余选项未启用，实际 %+v", opts)
 	}
 }
 
@@ -115,6 +115,31 @@ func TestNormalizeDirIsIdempotent(t *testing.T) {
 		}
 		if !filepath.IsAbs(once) {
 			t.Errorf("normalizeDir(%q) 应保持绝对路径形态，实际 %q", in, once)
+		}
+	}
+}
+
+// TestReportFormat rejects unsupported formats while retaining TXT export.
+func TestReportFormat(t *testing.T) {
+	for _, format := range []string{"html", "txt"} {
+		opts, err := Parse([]string{"-format", format})
+		if err != nil || opts.Format != format {
+			t.Fatalf("format %s: %+v %v", format, opts, err)
+		}
+	}
+	if _, err := Parse([]string{"-format", "pdf"}); !errors.Is(err, ErrInvalidArgs) {
+		t.Fatalf("invalid format accepted: %v", err)
+	}
+}
+
+// TestViewerOptions keeps report opening explicit for command-line use.
+func TestViewerOptions(t *testing.T) {
+	if _, err := Parse([]string{"-open", "-no-open"}); !errors.Is(err, ErrInvalidArgs) {
+		t.Fatal("conflicting viewer options accepted")
+	}
+	for _, flag := range []string{"-open", "-no-open"} {
+		if _, err := Parse([]string{flag}); err != nil {
+			t.Fatal(err)
 		}
 	}
 }
