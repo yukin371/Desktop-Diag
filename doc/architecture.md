@@ -60,3 +60,13 @@ ICMP 网关结果保留接口索引和名称用于报告归属。Windows `IcmpSe
 `scripts/build.ps1`、`scripts/test.ps1`、`scripts/release.ps1` 固定 Go 1.26.0 的子进程工具链。`scripts/quality-gate.ps1` 统一执行格式、vet、全量测试、覆盖率、Windows amd64/arm64 交叉编译和生产源码红线扫描。GitHub Actions 在 `windows-latest` 上重复这套门禁并归档验证产物。
 
 交叉编译只证明目标架构可构建，不能替代目标设备真机验收。当前未覆盖环境见 [阶段四收口](phase4/README.md)。
+
+
+## HTML 报告（CR-04，2026-10-08）
+
+CLI 默认 `-format html`，`-format txt` 保留原文本格式。编排层将格式传入 report.Writer；HTML 渲染通过 `html/template` 转义动态文本，复用原有分节注册与证据文案。内嵌样式、原生 details 和本地锚点提供离线导航/折叠，CSP 禁止脚本与外部资源；不会启动浏览器。两种格式共用目录降级、排他创建和失败清理，撞名保留对应扩展名。HTML 不在闭合文档后追加耗时文本，采集与判定耗时位于报告信息，含关闭的总耗时仍由控制台呈现。
+
+进程权限证据：winapi 只读查询 TokenIntegrityLevel，collect 存入 Host（等级名与 RID）并保留 API 原始记录；HTML/TXT 展示实际令牌等级。ICMP ERROR_ACCESS_DENIED 保留为跳过/证据不足，不能转换为网关丢包；R-19 的建议不默认要求提权，低完整性只作为可能限制条件，不能确定具体拦截者。
+
+
+桌面启动（CR-05）：入口以控制台输入/输出和 GetConsoleProcessList 判断是否为独立交互控制台，只有该环境显示启动/结束引导。查看器调用仅在成功落盘后、双击模式或显式 `-open` 时执行；`-no-open` 禁止。winapi/report_open.go 限定本地绝对 HTML/TXT 普通文件，固定 open verb，不传命令参数。质量门禁只允许该文件中固定形态的 ShellExecute 调用；其他外部启动仍禁用。发布脚本对正式签名版本要求可信证书及 SHA256/RFC3161 时间戳，签名先于哈希；SmartScreen 信誉不由代码保证。
