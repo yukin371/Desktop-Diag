@@ -29,7 +29,7 @@ type RenderContext struct {
 	PathNote     string        // 路径选择说明，例如 "已降级至用户目录（原因: ...）"
 	TotalElapsed time.Duration // 采集与判定耗时，落盘后的计时在报告尾与控制台记录。
 	GeneratedAt  time.Time     // 报告生成时刻（零值时回落 StartedAt）
-	PlainText    bool          // 纯文本模式：报告为 TXT，默认即纯文本
+	PlainText    bool          // 纯文本模式：TXT 报告头注明无颜色输出
 }
 
 // ReportSection 是三层结构中的一层。
@@ -134,6 +134,8 @@ func headerBlock(snap *model.Snapshot, ctx RenderContext) string {
 	sb.WriteString("\n")
 	sb.WriteString(field("计算机名", snap.Host.ComputerName))
 	sb.WriteString("\n")
+	sb.WriteString(field("进程完整性等级", integrityLine(snap.Host)))
+	sb.WriteString("\n")
 	sb.WriteString(field("运行账户", accountLine(snap.Host)))
 	sb.WriteString("\n")
 	sb.WriteString(field("操作系统", osSummary(snap.Host)))
@@ -237,7 +239,7 @@ func layer1Content(snap *model.Snapshot, issues []model.Issue) string {
 		for _, f := range snap.Failures {
 			fmt.Fprintf(&sb, "%s- %s\n", indentMain, failureShort(f))
 		}
-		sb.WriteString(indentMain + "说明: 上述项目的数据缺失，相关结论未参与判定；如需完整诊断请以管理员身份重试。\n")
+		sb.WriteString(indentMain + "说明: 上述项目的数据缺失，相关结论未参与判定；请检查运行环境和相关安全策略；缺失数据不等于网络故障。\n")
 	}
 
 	return sb.String()

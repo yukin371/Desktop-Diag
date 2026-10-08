@@ -733,9 +733,8 @@ func rulePartialData(s *model.Snapshot) []model.Issue {
 		Title:    fmt.Sprintf("诊断不完整，%d 项数据缺失，结论可能不完整", len(s.Failures)),
 		Detail: "以下项目未能成功采集或判定。缺失项对应的规则不会触发，" +
 			"因此本次结论可能在对应方向上偏于乐观，请结合完整清单判断。",
-		Evidence: ev,
-		Suggestion: "按上述原因逐项处理；若提示权限不足，以管理员身份重新运行通常可补齐缺失项；" +
-			"若已是管理员却仍提示「拒绝访问」，请检查安全软件或防火墙是否拦截了本程序。",
+		Evidence:   ev,
+		Suggestion: incompleteSuggestion(s),
 	}}
 }
 
@@ -788,4 +787,19 @@ func configurationAdapters(s *model.Snapshot) []model.Adapter {
 		}
 	}
 	return adapters
+}
+
+// incompleteSuggestion separates unavailable evidence from network failure and avoids blanket elevation advice.
+func incompleteSuggestion(s *model.Snapshot) string {
+	advice := "按缺失原因逐项核查运行环境和安全策略；ICMP 调用被拒绝表示探测受限，不是网关不响应或网络丢包。" +
+		"Windows ICMP API 通常无需管理员权限；请结合 DNS/TCP 结果判断，不要仅据此关闭安全软件、修改网络配置或要求提权。"
+	if s.Host.IntegrityLevel != "" {
+		advice += fmt.Sprintf(" 当前进程完整性等级：%s（RID=%d）。", s.Host.IntegrityLevel, s.Host.IntegrityRID)
+		if strings.HasPrefix(s.Host.IntegrityLevel, "Low") || strings.HasPrefix(s.Host.IntegrityLevel, "Untrusted") {
+			advice += "低完整性环境可能限制 ICMP；可由用户在可信的普通桌面运行环境中复测。该等级不证明具体拦截者。"
+		}
+	} else {
+		advice += " 进程完整性等级未知，不能推断具体拒绝原因。"
+	}
+	return advice
 }

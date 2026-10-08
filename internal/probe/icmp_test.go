@@ -237,7 +237,7 @@ func TestICMPTimeoutClassification(t *testing.T) {
 		}
 		return
 	}
-	if !strings.Contains(err.Error(), "全部调用失败") {
+	if !strings.Contains(err.Error(), "次调用全部失败") {
 		t.Errorf("调用级失败的错误文本应说明探测无法进行，实际: %v", err)
 	}
 }

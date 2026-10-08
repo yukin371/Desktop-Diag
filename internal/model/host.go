@@ -12,12 +12,15 @@ type Host struct {
 	ComputerName string
 	UserName     string
 	IsAdmin      bool
-	OSName       string // "Windows 11 Pro for Workstations"
-	OSVersion    string // "10.0.26200"
-	OSBuild      string // "26200"
-	OSArch       string // "AMD64"
-	Uptime       time.Duration
-	BootTime     time.Time // StartedAt - Uptime，近似值
+	// IntegrityLevel and IntegrityRID describe the actual process token; empty means unknown.
+	IntegrityLevel string
+	IntegrityRID   uint32
+	OSName         string // "Windows 11 Pro for Workstations"
+	OSVersion      string // "10.0.26200"
+	OSBuild        string // "26200"
+	OSArch         string // "AMD64"
+	Uptime         time.Duration
+	BootTime       time.Time // StartedAt - Uptime，近似值
 }
 
 // IfType 取值来自 IP_ADAPTER_ADDRESSES_LH.IfType（IANA ifType）；只保留 MVP 关心的少数几类，

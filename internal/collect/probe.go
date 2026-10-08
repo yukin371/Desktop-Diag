@@ -5,9 +5,11 @@ package collect
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/yukin371/desktop-diag/internal/detect"
@@ -122,7 +124,11 @@ func (c probeCollector) probeGateway(ctx context.Context, a model.Adapter) (resu
 		var err error
 		result, err = c.icmp(ctx, gateway, probe.ICMPOptions{Count: detect.ICMPPacketCount, Timeout: detect.ICMPTimeout, AdapterName: a.DisplayName(), AdapterIndex: a.Index})
 		if err != nil {
-			result = skippedProbe(model.ProbeICMPGateway, a.DisplayName(), gateway, "ICMP 探测未能完成："+err.Error())
+			reason := "ICMP 探测未能完成：" + err.Error()
+			if errors.Is(err, syscall.ERROR_ACCESS_DENIED) {
+				reason = "ICMP 调用被系统拒绝，探测受限；未获得网关可达性或丢包证据：" + err.Error()
+			}
+			result = skippedProbe(model.ProbeICMPGateway, a.DisplayName(), gateway, reason)
 		}
 	}
 	result.AdapterIndex = a.Index

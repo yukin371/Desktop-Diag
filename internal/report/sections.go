@@ -112,6 +112,7 @@ func renderHostSection(w io.Writer, snap *model.Snapshot) {
 
 	writeKV(w, "计算机名", orNotCollected(h.ComputerName))
 	writeKV(w, "运行账户", accountLine(h))
+	writeKV(w, "进程完整性等级", integrityLine(h))
 	writeKV(w, "操作系统", osLine)
 	if b := strings.TrimSpace(h.OSBuild); b != "" {
 		writeKV(w, "系统内部版本", b)
@@ -544,4 +545,12 @@ func virtualKindLabel(kind string) string {
 	default:
 		return strings.TrimSpace(kind)
 	}
+}
+
+// integrityLine preserves unknown state instead of guessing from elevation or executable ACLs.
+func integrityLine(h model.Host) string {
+	if h.IntegrityLevel == "" {
+		return notCollected
+	}
+	return fmt.Sprintf("%s（RID=%d）", h.IntegrityLevel, h.IntegrityRID)
 }

@@ -60,6 +60,13 @@ func (c systemCollector) Collect(ctx context.Context, snap *model.Snapshot) erro
 	host.IsAdmin = winapi.IsElevated()
 	snap.AddRaw("主机与系统", "Token.IsElevated", fmt.Sprintf("IsAdmin=%v", host.IsAdmin))
 
+	if level, rid, err := winapi.ProcessIntegrity(); err != nil {
+		partial = append(partial, "进程完整性等级: "+err.Error())
+	} else {
+		host.IntegrityLevel, host.IntegrityRID = level, rid
+		snap.AddRaw("主机与系统", "GetTokenInformation(TokenIntegrityLevel)", fmt.Sprintf("%s RID=%d", level, rid))
+	}
+
 	// 用 RtlGetVersion 而不是 GetVersionEx：后者在未声明兼容性的清单下会谎报版本。
 	if v, err := winapi.RtlGetVersion(); err != nil {
 		partial = append(partial, "操作系统版本: "+err.Error())
